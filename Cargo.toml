@@ -28,3 +28,4 @@ futures = "0.3"
 ratatui = "0.30"
 ureq = { version = "3", features = ["json"] }
 unicode-width = "0.2"
+ignore = "0.4"

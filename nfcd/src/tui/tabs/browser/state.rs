@@ -1,3 +1,4 @@
+use nfcd_core::config::load_config;
 use nfcd_core::normalizer::{NormalizationTarget, normalize_directory, normalize_single_file};
 
 use crate::tui::dir_browser::{DirBrowser, UnicodeForm};
@@ -124,7 +125,13 @@ impl BrowserState {
             normalize_single_file(path, target).map_err(|e| e.to_string())?;
         } else {
             let recursive = self.mode == BrowserMode::Recursive;
-            normalize_directory(path, recursive, target).map_err(|e| e.to_string())?;
+            let (cfg, err) = load_config();
+            if let Some(e) = err {
+                return Err(e.user_message().to_string());
+            }
+            let rules = cfg.ignore_rules_for(path);
+            normalize_directory(path, recursive, target, Some(&rules))
+                .map_err(|e| e.to_string())?;
         }
 
         // Refresh after conversion

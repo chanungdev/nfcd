@@ -1,4 +1,5 @@
 use crate::constants::CONFIG_PATH;
+use crate::ignore::IgnoreRules;
 use crate::utils::expand_tilde;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -10,8 +11,23 @@ use thiserror::Error;
 #[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    #[serde(default, skip_serializing_if = "GlobalSection::is_empty")]
+    global: GlobalSection,
     #[serde(default)]
     paths: Vec<ConfigFileEntry>,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
+struct GlobalSection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ignore: Vec<String>,
+}
+
+impl GlobalSection {
+    fn is_empty(&self) -> bool {
+        self.ignore.is_empty()
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -19,6 +35,8 @@ struct ConfigFileEntry {
     path: String,
     action: PathAction,
     mode: PathMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ignore: Vec<String>,
 }
 
 // === Public types ===
@@ -109,6 +127,8 @@ pub struct PathEntry {
     pub canonical: Option<PathBuf>,
     pub status: PathStatus,
     pub overrides: Option<usize>,
+    /// gitignore-style patterns relative to this entry's path.
+    pub ignore: Vec<String>,
 }
 
 impl PathEntry {
@@ -123,6 +143,7 @@ impl PathEntry {
             canonical,
             status,
             overrides: None,
+            ignore: Vec::new(),
         }
     }
 
@@ -135,6 +156,7 @@ impl PathEntry {
             canonical,
             status,
             overrides: None,
+            ignore: cfe.ignore,
         }
     }
 
@@ -143,6 +165,7 @@ impl PathEntry {
             path: self.raw.clone(),
             action: self.action,
             mode: self.mode,
+            ignore: self.ignore.clone(),
         }
     }
 }
@@ -153,11 +176,15 @@ pub struct ActiveEntry {
     pub canonical: PathBuf,
     pub action: PathAction,
     pub mode: PathMode,
+    /// Compiled global + entry patterns, rooted at `canonical`.
+    pub ignore: IgnoreRules,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub paths: Vec<PathEntry>,
+    /// gitignore-style patterns applied to every watch entry.
+    pub global_ignore: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -398,7 +425,13 @@ pub fn load_config() -> (Config, Option<ConfigError>) {
 
     compute_statuses(&mut entries);
 
-    (Config { paths: entries }, None)
+    (
+        Config {
+            paths: entries,
+            global_ignore: config_file.global.ignore,
+        },
+        None,
+    )
 }
 
 impl Config {
@@ -425,14 +458,32 @@ impl Config {
                     canonical: c.clone(),
                     action: e.action,
                     mode: e.mode,
+                    ignore: IgnoreRules::new(c, &self.global_ignore, &e.ignore),
                 })
             })
             .collect()
     }
 
+    /// Ignore rules for a manual conversion of `path`: the rules of the most
+    /// specific active Watch entry covering it, or global patterns rooted at `path`.
+    pub fn ignore_rules_for(&self, path: &Path) -> IgnoreRules {
+        let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.paths
+            .iter()
+            .filter(|e| matches!(e.status, PathStatus::Active) && e.action == PathAction::Watch)
+            .filter_map(|e| e.canonical.as_ref().map(|c| (e, c)))
+            .filter(|(_, c)| path.starts_with(c))
+            .max_by_key(|(_, c)| c.as_os_str().len())
+            .map(|(e, c)| IgnoreRules::new(c, &self.global_ignore, &e.ignore))
+            .unwrap_or_else(|| IgnoreRules::new(&path, &self.global_ignore, &[]))
+    }
+
     /// Save config to file in [[paths]] TOML format.
     pub fn save_to_file(&self, path: &Path) -> Result<(), ConfigError> {
         let config_file = ConfigFile {
+            global: GlobalSection {
+                ignore: self.global_ignore.clone(),
+            },
             paths: self.paths.iter().map(PathEntry::to_config_entry).collect(),
         };
 
@@ -458,6 +509,7 @@ mod tests {
             canonical: Some(PathBuf::from(canonical)),
             status: PathStatus::Active,
             overrides: None,
+            ignore: Vec::new(),
         }
     }
 
@@ -469,6 +521,7 @@ mod tests {
             canonical: None,
             status: PathStatus::NotFound,
             overrides: None,
+            ignore: Vec::new(),
         }
     }
 
@@ -652,5 +705,40 @@ mod tests {
         compute_statuses(&mut entries);
         assert_eq!(entries[0].status, PathStatus::Active);
         assert_eq!(entries[1].status, PathStatus::NotFound);
+    }
+
+    #[test]
+    fn ignore_patterns_round_trip() {
+        let src = r#"[global]
+ignore = [".git/", "*.app/"]
+
+[[paths]]
+path = "~/Downloads"
+action = "watch"
+mode = "recursive"
+ignore = ["*.crdownload", "!/torrents/한글/"]
+
+[[paths]]
+path = "~/Documents"
+action = "watch"
+mode = "children"
+"#;
+        let parsed: ConfigFile = toml::from_str(src).unwrap();
+        assert_eq!(parsed.global.ignore, [".git/", "*.app/"]);
+        assert_eq!(parsed.paths[0].ignore, ["*.crdownload", "!/torrents/한글/"]);
+        assert!(parsed.paths[1].ignore.is_empty());
+        let out = toml::to_string_pretty(&parsed).unwrap();
+        let reparsed: ConfigFile = toml::from_str(&out).unwrap();
+        assert_eq!(reparsed.global.ignore, parsed.global.ignore);
+        assert_eq!(reparsed.paths[0].ignore, parsed.paths[0].ignore);
+        assert!(!out.contains("ignore = []"), "empty lists must be omitted");
+    }
+
+    #[test]
+    fn config_without_ignore_still_parses() {
+        let src = "[[paths]]\npath = \"~/a\"\naction = \"watch\"\nmode = \"recursive\"\n";
+        let parsed: ConfigFile = toml::from_str(src).unwrap();
+        assert!(parsed.global.ignore.is_empty());
+        assert_eq!(toml::to_string_pretty(&parsed).unwrap(), src);
     }
 }

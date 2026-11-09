@@ -8,6 +8,7 @@ use serde_json::json;
 
 use nfcd_core::config::{self, PathAction, PathEntry, PathMode, PathStatus};
 use nfcd_core::constants::{CONFIG_PATH, PLIST_PATH, SERVICE_LABEL};
+use nfcd_core::ignore::IgnoreRules;
 use nfcd_core::normalizer::{self, NormalizationTarget, get_actual_file_name};
 use nfcd_core::utils::{abbreviate_home_path, expand_tilde};
 
@@ -796,6 +797,16 @@ fn cmd_convert(
     }
 }
 
+/// Ignore rules for a manual directory conversion. Fails on a broken config
+/// rather than silently converting files the user meant to ignore.
+fn load_ignore_rules(path: &Path) -> Result<IgnoreRules, Box<dyn std::error::Error>> {
+    let (cfg, err) = config::load_config();
+    if let Some(e) = err {
+        return Err(format!("{}: {e}", e.user_message()).into());
+    }
+    Ok(cfg.ignore_rules_for(path))
+}
+
 fn cmd_convert_dry_run(
     path: &Path,
     mode: ConvertMode,
@@ -814,6 +825,9 @@ fn cmd_convert_dry_run(
         }
         ConvertMode::Children | ConvertMode::Recursive => {
             let recursive = matches!(mode, ConvertMode::Recursive);
+            let rules = load_ignore_rules(path)?;
+            // Same matching as normalize_directory: rules are rooted at canonical paths.
+            let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             let mut queue = VecDeque::new();
             queue.push_back(path.to_path_buf());
 
@@ -822,6 +836,13 @@ fn cmd_convert_dry_run(
                     for entry in entries.filter_map(|e| e.ok()) {
                         let entry_path = entry.path();
                         let name = entry.file_name().to_string_lossy().to_string();
+
+                        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                        if let Ok(rel) = entry_path.strip_prefix(path)
+                            && rules.is_ignored(&canonical.join(rel), is_dir)
+                        {
+                            continue;
+                        }
 
                         if target.needs_conversion(&name) {
                             would_convert.push(abbreviate_home_path(&entry_path));
@@ -892,7 +913,8 @@ fn cmd_convert_execute(
         }
         ConvertMode::Children | ConvertMode::Recursive => {
             let recursive = matches!(mode, ConvertMode::Recursive);
-            let result = normalizer::normalize_directory(path, recursive, target)?;
+            let rules = load_ignore_rules(path)?;
+            let result = normalizer::normalize_directory(path, recursive, target, Some(&rules))?;
 
             if json {
                 let converted: Vec<String> = result

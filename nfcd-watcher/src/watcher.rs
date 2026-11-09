@@ -3,6 +3,7 @@ use log::{debug, error, info};
 use nfcd_core::config::{ActiveEntry, PathAction, PathMode};
 use nfcd_core::constants::{HEARTBEAT_INTERVAL, HEARTBEAT_PATH, PLIST_PATH};
 use nfcd_core::normalizer::NormalizationTarget;
+use notify::event::{CreateKind, EventKind};
 use notify::{Error as NotifyError, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,9 +18,12 @@ const MAX_CONCURRENT_TASKS: usize = 200;
 /// Debounce window for deduplicating events on the same path.
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(50);
 
-/// Determine the effective action for an event path based on active entries.
-/// Returns the action of the most specific (longest canonical path) matching active entry.
-fn effective_action(event_path: &Path, active_entries: &[ActiveEntry]) -> Option<PathAction> {
+/// Determine the effective entry for an event path based on active entries.
+/// Returns the most specific (longest canonical path) matching active entry.
+fn effective_entry<'a>(
+    event_path: &Path,
+    active_entries: &'a [ActiveEntry],
+) -> Option<&'a ActiveEntry> {
     active_entries
         .iter()
         .filter(|e| match e.mode {
@@ -27,7 +31,16 @@ fn effective_action(event_path: &Path, active_entries: &[ActiveEntry]) -> Option
             PathMode::Children => event_path.parent() == Some(&*e.canonical),
         })
         .max_by_key(|e| e.canonical.as_os_str().len())
-        .map(|e| e.action)
+}
+
+/// Whether the event path is a directory. Uses the event kind when FSEvents
+/// reports it (create events); otherwise falls back to lstat.
+fn is_dir_event(event: &Event, path: &Path) -> bool {
+    match event.kind {
+        EventKind::Create(CreateKind::Folder) => true,
+        EventKind::Create(CreateKind::File) => false,
+        _ => std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()),
+    }
 }
 
 /// Register watch paths with the notify watcher. Returns (recursive_count, children_count, ignore_count).
@@ -177,11 +190,11 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
                             None => continue,
                         };
 
-                        // Use effective_action to determine if this event should be processed.
-                        match effective_action(event_path, &entries) {
-                            Some(PathAction::Watch) => {}
+                        // Use the most specific entry to determine if this event should be processed.
+                        let entry = match effective_entry(event_path, &entries) {
+                            Some(e) if e.action == PathAction::Watch => e,
                             _ => continue,
-                        }
+                        };
 
                         let file_name = match event_path.file_name().and_then(|s| s.to_str()) {
                             Some(name) => name,
@@ -189,6 +202,10 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
                         };
                         // Early filter: skip files already in NFC to avoid unnecessary spawn_blocking in handler
                         if !NormalizationTarget::NFC.needs_conversion(file_name) {
+                            continue;
+                        }
+                        // Pattern check only for names that need conversion (may lstat).
+                        if entry.ignore.is_ignored(event_path, is_dir_event(&event, event_path)) {
                             continue;
                         }
 

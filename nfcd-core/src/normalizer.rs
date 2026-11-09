@@ -1,3 +1,4 @@
+use crate::ignore::IgnoreRules;
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::ffi::CStr;
@@ -159,6 +160,7 @@ fn process_entry(
     target: NormalizationTarget,
     target_folder: &Path,
     recursive: bool,
+    ignore: Option<(&IgnoreRules, &Path)>,
 ) -> (
     Result<Option<ConversionResult>, ConversionError>,
     Option<PathBuf>,
@@ -172,6 +174,19 @@ fn process_entry(
 
     if name == "." || name == ".." {
         return (Ok(None), None);
+    }
+
+    // Ignored entries are neither renamed nor descended into.
+    // Rules are rooted at a canonical path, so match against the canonical form
+    // of `path` (the caller may pass a relative or non-canonical target folder).
+    // file_type() comes from readdir (d_type), so no extra syscall.
+    if let Some((rules, canonical_target)) = ignore
+        && let Ok(rel) = path.strip_prefix(target_folder)
+    {
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+        if rules.is_ignored(&canonical_target.join(rel), is_dir) {
+            return (Ok(None), None);
+        }
     }
 
     let original_name = name.to_string_lossy();
@@ -217,13 +232,20 @@ fn process_entry(
 ///
 /// If `recursive` is true, subdirectories are also processed.
 /// Symlinks and directories on different filesystems are skipped.
+/// Entries matched by `ignore` are skipped along with everything under them.
 pub fn normalize_directory(
     target_folder: &Path,
     recursive: bool,
     target: NormalizationTarget,
+    ignore: Option<&IgnoreRules>,
 ) -> Result<DirectoryResult, NormalizerError> {
     let mut converted = Vec::new();
     let mut errors = Vec::new();
+
+    // On failure, read_dir below reports the error as before.
+    let canonical_target =
+        fs::canonicalize(target_folder).unwrap_or_else(|_| target_folder.to_path_buf());
+    let ignore = ignore.map(|rules| (rules, canonical_target.as_path()));
 
     let mut queue = VecDeque::new();
     queue.push_back(target_folder.to_path_buf());
@@ -242,7 +264,7 @@ pub fn normalize_directory(
 
         let results: Vec<_> = entries
             .par_iter()
-            .map(|entry| process_entry(entry, target, target_folder, recursive))
+            .map(|entry| process_entry(entry, target, target_folder, recursive, ignore))
             .collect();
 
         for (result, subdir) in results {
@@ -319,7 +341,7 @@ mod tests {
         create_nfd_file(temp.path(), "파일1.txt");
         create_nfd_file(&sub, "파일2.txt");
 
-        normalize_directory(temp.path(), true, NormalizationTarget::NFC).unwrap();
+        normalize_directory(temp.path(), true, NormalizationTarget::NFC, None).unwrap();
 
         // Verify all entries are NFC
         fn check_all_nfc(dir: &Path) -> bool {
@@ -350,5 +372,37 @@ mod tests {
 
         // File should still exist with same name
         assert!(path.exists());
+    }
+
+    #[test]
+    fn test_normalize_directory_skips_ignored() {
+        let temp = TempDir::new().unwrap();
+        let skip = temp.path().join("건너뛰기".nfd().collect::<String>());
+        fs::create_dir(&skip).unwrap();
+        create_nfd_file(&skip, "안쪽.txt");
+        create_nfd_file(temp.path(), "임시.tmp");
+        create_nfd_file(temp.path(), "변환.txt");
+
+        // Patterns are NFC; on-disk names are NFD.
+        // Rules are rooted at the canonical path (/private/var/...), traversal uses
+        // the raw temp path (/var/...), as with ignore_rules_for() in real callers.
+        let rules = IgnoreRules::new(
+            &fs::canonicalize(temp.path()).unwrap(),
+            &["*.tmp".to_string()],
+            &["/건너뛰기/".to_string()],
+        );
+        normalize_directory(temp.path(), true, NormalizationTarget::NFC, Some(&rules)).unwrap();
+
+        let names = |dir: &Path| -> Vec<String> {
+            fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+                .collect()
+        };
+        let top = names(temp.path());
+        assert!(top.contains(&"변환.txt".to_string()));
+        assert!(top.contains(&"임시.tmp".nfd().collect::<String>()));
+        assert!(top.contains(&"건너뛰기".nfd().collect::<String>()));
+        assert_eq!(names(&skip), vec!["안쪽.txt".nfd().collect::<String>()]);
     }
 }
