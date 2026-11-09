@@ -55,12 +55,12 @@ gh release edit vX.Y.Z --notes "$(cat <<'EOF'
 ### Fixed
 - ...
 
-**Full Changelog**: https://github.com/elgar328/nfd2nfc/compare/vPREV...vX.Y.Z
+**Full Changelog**: https://github.com/chanungdev/nfcd/compare/vPREV...vX.Y.Z
 EOF
 )"
 ```
 
-See [v2.0.2](https://github.com/elgar328/nfd2nfc/releases/tag/v2.0.2) for an example.
+See [v2.0.2](https://github.com/chanungdev/nfcd/releases/tag/v2.0.2) for an example.
 
 ### 4. Set the next dev version
 
@@ -76,10 +76,10 @@ git push origin main
 
 ### 5. Wait for homebrew-core autobump
 
-nfd2nfc is on the autobump list. BrewTestBot automatically creates a version bump PR within ~3 hours of a new release. Check the PR status:
+nfcd is on the autobump list. BrewTestBot automatically creates a version bump PR within ~3 hours of a new release. Check the PR status:
 
 ```bash
-gh search prs --repo Homebrew/homebrew-core nfd2nfc --state open
+gh search prs --repo Homebrew/homebrew-core nfcd --state open
 ```
 
 ## Automated Pipeline
@@ -88,11 +88,11 @@ The `release.yml` workflow runs automatically when a `v*` tag is pushed. It crea
 
 ## Post-release Checklist
 
-- [ ] Verify the [GitHub Release](https://github.com/elgar328/nfd2nfc/releases) was created
+- [ ] Verify the [GitHub Release](https://github.com/chanungdev/nfcd/releases) was created
 - [ ] Write release notes (Step 3) and verify with `gh release view vX.Y.Z`
-- [ ] Check that the autobump PR was created: `gh search prs --repo Homebrew/homebrew-core nfd2nfc --state open`
-- [ ] After the PR is merged, confirm the formula is updated: `brew update && brew info nfd2nfc`
-- [ ] Confirm installation works: `brew upgrade nfd2nfc`
+- [ ] Check that the autobump PR was created: `gh search prs --repo Homebrew/homebrew-core nfcd --state open`
+- [ ] After the PR is merged, confirm the formula is updated: `brew update && brew info nfcd`
+- [ ] Confirm installation works: `brew upgrade nfcd`
 
 ## Updating Screenshots
 

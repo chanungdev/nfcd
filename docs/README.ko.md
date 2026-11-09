@@ -1,14 +1,13 @@
-# nfd2nfc
+# nfcd
 
-[![Homebrew](https://img.shields.io/homebrew/v/nfd2nfc)](https://formulae.brew.sh/formula/nfd2nfc)
-[![Release](https://img.shields.io/github/v/release/elgar328/nfd2nfc)](https://github.com/elgar328/nfd2nfc/releases)
-[![CI](https://github.com/elgar328/nfd2nfc/actions/workflows/ci.yml/badge.svg)](https://github.com/elgar328/nfd2nfc/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/elgar328/nfd2nfc)](https://github.com/elgar328/nfd2nfc#license)
+[![Release](https://img.shields.io/github/v/release/chanungdev/nfcd)](https://github.com/chanungdev/nfcd/releases)
+[![CI](https://github.com/chanungdev/nfcd/actions/workflows/ci.yml/badge.svg)](https://github.com/chanungdev/nfcd/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/chanungdev/nfcd)](https://github.com/chanungdev/nfcd#license)
 
 [![English](https://img.shields.io/badge/lang-English_↗-blue)](../README.md)
 
 > [!NOTE]
-> **nfd2nfc가 homebrew-core에 등록되었습니다!** 기존 tap에서 설치한 경우 [마이그레이션](#마이그레이션) 안내를 확인하세요.
+> nfcd는 [elgar328/nfd2nfc](https://github.com/elgar328/nfd2nfc)의 포크입니다. 설정 경로(`~/.config/nfcd/`)와 LaunchAgent 라벨이 달라 원본과 함께 설치해도 충돌하지 않습니다.
 
 NFD 파일명을 실시간으로 감지해 NFC로 변환하는 macOS 도구입니다. 다른 OS와 파일을 주고받을 때 생기는 파일명 깨짐 문제를 해결합니다.
 
@@ -26,7 +25,7 @@ macOS는 파일명을 NFD로 저장하지만, Windows와 Linux는 NFC를 사용�
 - Git이 같은 파일을 변경된 것으로 인식
 - 클라우드 동기화나 압축 해제 시 경로를 찾지 못함
 
-**nfd2nfc**는 TUI와 CLI, 그리고 백그라운드 감시 서비스를 통해 이 문제를 자동으로 해결합니다.
+**nfcd**는 TUI와 CLI, 그리고 백그라운드 감시 서비스를 통해 이 문제를 자동으로 해결합니다.
 
 ## 주요 기능
 
@@ -63,30 +62,30 @@ Browser 탭에서 파일과 디렉토리의 정규화 형식(NFD/NFC)을 확인�
 
 ## CLI 모드
 
-인수 없이 `nfd2nfc`를 실행하면 TUI가 실행됩니다. 커맨드를 추가하면 CLI 모드로 동작합니다. 각 커맨드의 세부 옵션은 `nfd2nfc <command> --help`로 확인할 수 있습니다.
+인수 없이 `nfcd`를 실행하면 TUI가 실행됩니다. 커맨드를 추가하면 CLI 모드로 동작합니다. 각 커맨드의 세부 옵션은 `nfcd <command> --help`로 확인할 수 있습니다.
 
 ```
-nfd2nfc status [--json]
-nfd2nfc watcher start|stop|restart
-nfd2nfc config list [--json]
-nfd2nfc config add <path> [--action watch|ignore] [--mode recursive|children] [--dry-run] [--json]
-nfd2nfc config remove <index> [--dry-run] [--json]
-nfd2nfc config sort
-nfd2nfc convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
-nfd2nfc log show [--last 30m] [--json]
-nfd2nfc log stream [--json]
+nfcd status [--json]
+nfcd watcher start|stop|restart
+nfcd config list [--json]
+nfcd config add <path> [--action watch|ignore] [--mode recursive|children] [--dry-run] [--json]
+nfcd config remove <index> [--dry-run] [--json]
+nfcd config sort
+nfcd convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
+nfcd log show [--last 30m] [--json]
+nfcd log stream [--json]
 ```
 
 사용 예시:
 
 ```
-$ nfd2nfc status
+$ nfcd status
 Watcher:          running
 Version:          2.1.0
-Binary:           /opt/homebrew/Cellar/nfd2nfc/2.1.0/bin/nfd2nfc
-Watcher binary:   /opt/homebrew/Cellar/nfd2nfc/2.1.0/bin/nfd2nfc-watcher
-Config:           ~/.config/nfd2nfc/config.toml
-Plist:            ~/Library/LaunchAgents/io.github.elgar328.nfd2nfc.plist
+Binary:           ~/.cargo/bin/nfcd
+Watcher binary:   ~/.cargo/bin/nfcd-watcher
+Config:           ~/.config/nfcd/config.toml
+Plist:            ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
 Registered paths: 6 total (4 active, 1 overridden, 1 not found)
 Full Disk Access: granted
 Update:           up to date
@@ -94,20 +93,25 @@ Update:           up to date
 
 ## 제한 사항
 
-nfd2nfc는 macOS가 파일명을 NFD로 저장하여 다른 OS에서 파일명이 깨지는 문제를 근본적으로 해결합니다. 다만 브라우저, 이메일 서비스, 클라우드 스토리지, 메시징 앱, 압축 도구 등은 파일을 주고받는 과정에서 자체적으로 파일명을 NFD로 변환할 수 있습니다. 이는 각 앱 고유의 동작으로, nfd2nfc가 관여할 수 없는 영역입니다.
+nfcd는 macOS가 파일명을 NFD로 저장하여 다른 OS에서 파일명이 깨지는 문제를 근본적으로 해결합니다. 다만 브라우저, 이메일 서비스, 클라우드 스토리지, 메시징 앱, 압축 도구 등은 파일을 주고받는 과정에서 자체적으로 파일명을 NFD로 변환할 수 있습니다. 이는 각 앱 고유의 동작으로, nfcd가 관여할 수 없는 영역입니다.
 
 ## 설치 방법
 
-[Homebrew](https://brew.sh)를 통해 설치할 수 있습니다:
+소스에서 빌드합니다 ([Rust](https://rustup.rs) 필요):
 
 ```bash
-brew install nfd2nfc
+git clone https://github.com/chanungdev/nfcd.git
+cd nfcd
+cargo install --path nfcd
+cargo install --path nfcd-watcher
 ```
+
+두 바이너리는 같은 디렉터리에 설치되어야 합니다 (기본값 `~/.cargo/bin`).
 
 실행:
 
 ```bash
-nfd2nfc
+nfcd
 ```
 
 처음 실행하면 watcher 서비스가 LaunchAgent로 자동 등록됩니다. 이후 TUI나 CLI에서 시작/중지할 수 있습니다.
@@ -116,30 +120,22 @@ nfd2nfc
 
 Watcher가 파일을 변환할 때 macOS가 폴더 접근 권한을 반복적으로 요청한다면, watcher 바이너리에 **전체 디스크 접근 권한**을 부여하세요:
 
-1. `which nfd2nfc-watcher`를 실행하여 바이너리 경로 확인
+1. `which nfcd-watcher`를 실행하여 바이너리 경로 확인
 2. **시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한** 열기
-3. 이미 `nfd2nfc-watcher`가 목록에 있다면 **토글을 끄는 것이 아니라 완전히 제거** (항목 선택 후 `-` 버튼)
+3. 이미 `nfcd-watcher`가 목록에 있다면 **토글을 끄는 것이 아니라 완전히 제거** (항목 선택 후 `-` 버튼)
 4. `+` 클릭 → `Cmd+Shift+G`를 눌러 1단계의 경로를 입력하고 추가
-5. `nfd2nfc status`를 실행하여 **Full Disk Access**가 `granted`로 표시되는지 확인
+5. `nfcd status`를 실행하여 **Full Disk Access**가 `granted`로 표시되는지 확인
 
 새 버전으로 업데이트한 후에는 위 단계를 다시 진행하여 전체 디스크 접근 권한을 다시 설정해야 합니다.
 
 > **참고:** macOS Tahoe 26.1~26.2에서는 시스템 버그로 인해 커맨드라인 바이너리에 전체 디스크 접근 권한이 적용되지 않습니다. 이 문제는 macOS 26.3에서 해결되었습니다.
 
-### 마이그레이션
-
-v2.0.7부터 nfd2nfc가 개인 tap에서 homebrew-core로 이전되었습니다. v2.0.6 이하 버전을 사용 중이라면 다음 명령으로 마이그레이션할 수 있습니다:
-
-```bash
-brew uninstall nfd2nfc
-brew untap elgar328/nfd2nfc
-brew install nfd2nfc
-```
-
 ### 업그레이드
 
 ```bash
-brew upgrade nfd2nfc
+git pull
+cargo install --path nfcd
+cargo install --path nfcd-watcher
 ```
 
 전체 디스크 접근 권한을 사용 중이라면, 업그레이드 후 해당 권한을 다시 설정해야 합니다.
@@ -147,7 +143,7 @@ brew upgrade nfd2nfc
 ## 제거 방법
 
 ```bash
-brew uninstall nfd2nfc
+cargo uninstall nfcd nfcd-watcher
 ```
 
 ## License

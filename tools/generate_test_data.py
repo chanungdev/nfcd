@@ -1,6 +1,6 @@
 """
 This Python script deterministically generates sample folders and files 
-for testing the nfd2nfc program, always producing consistent results. 
+for testing the nfcd program, always producing consistent results. 
 If the target folder already exists, it will be deleted and recreated. 
 Note that most names behave differently under NFD and NFC normalization, 
 though some English names are also included.

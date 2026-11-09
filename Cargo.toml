@@ -1,5 +1,5 @@
 [workspace]
-members = ["nfd2nfc", "nfd2nfc-core", "nfd2nfc-watcher"]
+members = ["nfcd", "nfcd-core", "nfcd-watcher"]
 resolver = "3"
 
 [workspace.package]

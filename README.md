@@ -1,14 +1,13 @@
-# nfd2nfc
+# nfcd
 
-[![Homebrew](https://img.shields.io/homebrew/v/nfd2nfc)](https://formulae.brew.sh/formula/nfd2nfc)
-[![Release](https://img.shields.io/github/v/release/elgar328/nfd2nfc)](https://github.com/elgar328/nfd2nfc/releases)
-[![CI](https://github.com/elgar328/nfd2nfc/actions/workflows/ci.yml/badge.svg)](https://github.com/elgar328/nfd2nfc/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/elgar328/nfd2nfc)](https://github.com/elgar328/nfd2nfc#license)
+[![Release](https://img.shields.io/github/v/release/chanungdev/nfcd)](https://github.com/chanungdev/nfcd/releases)
+[![CI](https://github.com/chanungdev/nfcd/actions/workflows/ci.yml/badge.svg)](https://github.com/chanungdev/nfcd/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/chanungdev/nfcd)](https://github.com/chanungdev/nfcd#license)
 
 [![한국어](https://img.shields.io/badge/lang-한국어_↗-blue)](docs/README.ko.md)
 
 > [!NOTE]
-> **nfd2nfc is now on homebrew-core!** If you previously installed via the tap, see [Migration](#migration).
+> nfcd is a fork of [elgar328/nfd2nfc](https://github.com/elgar328/nfd2nfc). It uses its own config path (`~/.config/nfcd/`) and LaunchAgent label, so it does not conflict with the original.
 
 A macOS tool that watches directories and converts NFD filenames to NFC in real time, ensuring cross-platform compatibility.
 
@@ -26,7 +25,7 @@ macOS stores filenames in NFD, while Windows and Linux use NFC. This mismatch ca
 - Git sees identical files as untracked or modified
 - Cloud sync and archive tools fail to match paths
 
-**nfd2nfc** provides an interactive TUI, a scriptable CLI, and a background watcher service that handles conversion automatically.
+**nfcd** provides an interactive TUI, a scriptable CLI, and a background watcher service that handles conversion automatically.
 
 ## Features
 
@@ -63,30 +62,30 @@ The Browser tab lets you inspect files and directories for their Unicode normali
 
 ## CLI Mode
 
-Running `nfd2nfc` without arguments launches the TUI. Add a command to use CLI mode. Run `nfd2nfc <command> --help` for detailed options.
+Running `nfcd` without arguments launches the TUI. Add a command to use CLI mode. Run `nfcd <command> --help` for detailed options.
 
 ```
-nfd2nfc status [--json]
-nfd2nfc watcher start|stop|restart
-nfd2nfc config list [--json]
-nfd2nfc config add <path> [--action watch|ignore] [--mode recursive|children] [--dry-run] [--json]
-nfd2nfc config remove <index> [--dry-run] [--json]
-nfd2nfc config sort
-nfd2nfc convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
-nfd2nfc log show [--last 30m] [--json]
-nfd2nfc log stream [--json]
+nfcd status [--json]
+nfcd watcher start|stop|restart
+nfcd config list [--json]
+nfcd config add <path> [--action watch|ignore] [--mode recursive|children] [--dry-run] [--json]
+nfcd config remove <index> [--dry-run] [--json]
+nfcd config sort
+nfcd convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
+nfcd log show [--last 30m] [--json]
+nfcd log stream [--json]
 ```
 
 Example:
 
 ```
-$ nfd2nfc status
+$ nfcd status
 Watcher:          running
 Version:          2.1.0
-Binary:           /opt/homebrew/Cellar/nfd2nfc/2.1.0/bin/nfd2nfc
-Watcher binary:   /opt/homebrew/Cellar/nfd2nfc/2.1.0/bin/nfd2nfc-watcher
-Config:           ~/.config/nfd2nfc/config.toml
-Plist:            ~/Library/LaunchAgents/io.github.elgar328.nfd2nfc.plist
+Binary:           ~/.cargo/bin/nfcd
+Watcher binary:   ~/.cargo/bin/nfcd-watcher
+Config:           ~/.config/nfcd/config.toml
+Plist:            ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
 Registered paths: 6 total (4 active, 1 overridden, 1 not found)
 Full Disk Access: granted
 Update:           up to date
@@ -94,20 +93,25 @@ Update:           up to date
 
 ## Limitations
 
-nfd2nfc solves the root cause of filenames breaking across operating systems — macOS storing them in NFD. However, other software (browsers, email services, cloud storage, messaging apps, archive tools, etc.) may independently convert filenames to NFD when transferring files. This is application-level behavior outside the scope of nfd2nfc.
+nfcd solves the root cause of filenames breaking across operating systems — macOS storing them in NFD. However, other software (browsers, email services, cloud storage, messaging apps, archive tools, etc.) may independently convert filenames to NFD when transferring files. This is application-level behavior outside the scope of nfcd.
 
 ## Installation
 
-Requires [Homebrew](https://brew.sh).
+Build from source (requires [Rust](https://rustup.rs)):
 
 ```bash
-brew install nfd2nfc
+git clone https://github.com/chanungdev/nfcd.git
+cd nfcd
+cargo install --path nfcd
+cargo install --path nfcd-watcher
 ```
+
+Both binaries must be installed in the same directory (`~/.cargo/bin` by default).
 
 Then run it:
 
 ```bash
-nfd2nfc
+nfcd
 ```
 
 On first launch, the watcher service is automatically registered as a LaunchAgent. After that, you can start and stop it from the TUI or CLI.
@@ -116,30 +120,22 @@ On first launch, the watcher service is automatically registered as a LaunchAgen
 
 If macOS repeatedly prompts for folder access when the watcher converts files, grant **Full Disk Access** to the watcher binary:
 
-1. Run `which nfd2nfc-watcher` to find the binary path
+1. Run `which nfcd-watcher` to find the binary path
 2. Open **System Settings → Privacy & Security → Full Disk Access**
-3. If `nfd2nfc-watcher` is already listed, remove it completely (click `-`, not just toggle off)
+3. If `nfcd-watcher` is already listed, remove it completely (click `-`, not just toggle off)
 4. Click `+`, press `Cmd+Shift+G`, paste the path from step 1, and add it
-5. Run `nfd2nfc status` and verify that **Full Disk Access** shows `granted`
+5. Run `nfcd status` and verify that **Full Disk Access** shows `granted`
 
 After upgrading to a new version, you must re-do the steps above to grant Full Disk Access again.
 
 > **Note:** On macOS Tahoe 26.1–26.2, Full Disk Access does not take effect for command-line binaries due to a system bug. This is resolved in macOS 26.3.
 
-### Migration
-
-Starting with v2.0.7, nfd2nfc moved from the personal tap to homebrew-core. If you are using v2.0.6 or earlier, migrate with:
-
-```bash
-brew uninstall nfd2nfc
-brew untap elgar328/nfd2nfc
-brew install nfd2nfc
-```
-
 ### Upgrading
 
 ```bash
-brew upgrade nfd2nfc
+git pull
+cargo install --path nfcd
+cargo install --path nfcd-watcher
 ```
 
 If you have granted Full Disk Access, you must reconfigure it after upgrading.
@@ -147,7 +143,7 @@ If you have granted Full Disk Access, you must reconfigure it after upgrading.
 ## Uninstallation
 
 ```bash
-brew uninstall nfd2nfc
+cargo uninstall nfcd nfcd-watcher
 ```
 
 ## License

@@ -1202,7 +1202,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nfd2nfc"
+name = "nfcd"
 version = "2.1.1-dev"
 dependencies = [
  "clap",
@@ -1210,7 +1210,7 @@ dependencies = [
  "futures",
  "libc",
  "log",
- "nfd2nfc-core",
+ "nfcd-core",
  "ratatui",
  "serde",
  "serde_json",
@@ -1222,7 +1222,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nfd2nfc-core"
+name = "nfcd-core"
 version = "2.1.1-dev"
 dependencies = [
  "dirs",
@@ -1240,12 +1240,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "nfd2nfc-watcher"
+name = "nfcd-watcher"
 version = "2.1.1-dev"
 dependencies = [
  "dirs",
  "log",
- "nfd2nfc-core",
+ "nfcd-core",
  "notify",
  "once_cell",
  "tokio",
