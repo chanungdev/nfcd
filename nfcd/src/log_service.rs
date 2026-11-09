@@ -29,10 +29,9 @@ fn extract_json_field(line: &str, field: &str) -> Option<String> {
 
     let start = if let Some(idx) = line.find(&ndjson_prefix) {
         idx + ndjson_prefix.len()
-    } else if let Some(idx) = line.find(&pretty_prefix) {
-        idx + pretty_prefix.len()
     } else {
-        return None;
+        let idx = line.find(&pretty_prefix)?;
+        idx + pretty_prefix.len()
     };
 
     // Find the closing quote, handling escaped characters
