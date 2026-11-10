@@ -2,6 +2,7 @@ use crossterm::event::KeyCode;
 
 use crate::tui::app::render::content_area;
 use crate::tui::component::{Action, ScrollDirection, SharedState};
+use crate::tui::tabs::config::ignore_modal::events as ignore_events;
 use crate::tui::tabs::config::modal::events as modal_events;
 use crate::tui::tabs::config::modal::events::{
     handle_modal_double_click, handle_modal_mouse_click, handle_modal_scroll,
@@ -10,6 +11,13 @@ use crate::tui::tabs::config::state::ConfigState;
 use crate::tui::text_util;
 
 pub fn handle_key(state: &mut ConfigState, key: KeyCode, _shared: &SharedState) -> Option<Action> {
+    if state.ignore_modal.show {
+        // Consume every key so typed text (e.g. 'q', digits) never reaches app shortcuts.
+        if let Some(result) = ignore_events::handle_key(&mut state.ignore_modal, key) {
+            state.apply_ignore_edit(result);
+        }
+        return Some(Action::Consumed);
+    }
     if state.modal.show {
         let (action, add_result) = modal_events::handle_modal_key(&mut state.modal, key);
         if let Some(result) = add_result {
@@ -38,6 +46,10 @@ pub fn handle_key(state: &mut ConfigState, key: KeyCode, _shared: &SharedState) 
         }
         KeyCode::Char('m') => {
             state.toggle_mode();
+            None
+        }
+        KeyCode::Char('i') => {
+            state.open_ignore_editor();
             None
         }
         KeyCode::Char('o') => {
@@ -77,6 +89,10 @@ pub fn handle_key(state: &mut ConfigState, key: KeyCode, _shared: &SharedState) 
 }
 
 pub fn handle_scroll(state: &mut ConfigState, direction: ScrollDirection) -> Option<Action> {
+    if state.ignore_modal.show {
+        ignore_events::handle_scroll(&mut state.ignore_modal, direction);
+        return None;
+    }
     if state.modal.show {
         return handle_modal_scroll(&mut state.modal, direction);
     }
@@ -88,6 +104,9 @@ pub fn handle_scroll(state: &mut ConfigState, direction: ScrollDirection) -> Opt
 }
 
 pub fn handle_mouse_click(state: &mut ConfigState, x: u16, y: u16) -> Option<Action> {
+    if state.ignore_modal.show {
+        return None; // shortcut bar clicks arrive as keys
+    }
     if state.modal.show {
         return handle_modal_mouse_click(&mut state.modal, x, y);
     }
@@ -101,13 +120,9 @@ fn handle_table_mouse_click(state: &mut ConfigState, y: u16) {
     let table_data_start_y = inner_y + 2;
     let table_end_y = ca.y + ca.height - 1;
 
-    if let Some(idx) = text_util::clicked_list_index(
-        y,
-        table_data_start_y,
-        table_end_y,
-        0,
-        state.config.paths.len(),
-    ) {
+    if let Some(idx) =
+        text_util::clicked_list_index(y, table_data_start_y, table_end_y, 0, state.row_count())
+    {
         state.table_state.select(Some(idx));
     }
 }

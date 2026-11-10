@@ -1,4 +1,5 @@
 pub mod events;
+pub mod ignore_modal;
 pub mod modal;
 pub mod render;
 pub mod state;

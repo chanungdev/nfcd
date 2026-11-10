@@ -20,12 +20,30 @@ use crate::tui::app::events::MouseState;
 use crate::tui::component::SharedState;
 use crate::tui::shortcuts::{ShortcutBlock, gap, space};
 use crate::tui::styles::{key_style, label_style};
+use crate::tui::tabs::config::ignore_modal::render::render_ignore_modal;
 use crate::tui::tabs::config::modal::render::render_add_modal;
 use crate::tui::tabs::config::state::ConfigState;
 use std::path::Path;
 
 use nfcd_core::config::{PathEntry, PathMode, PathStatus};
 use nfcd_core::utils::abbreviate_home_path;
+
+fn global_description(patterns: &[String]) -> String {
+    let list = if patterns.is_empty() {
+        "none".to_string()
+    } else {
+        patterns.join(", ")
+    };
+    format!("Global ignore patterns\nApplied to every watch path. Patterns: {list}")
+}
+
+/// Ignore column text: pattern count, or "-" when empty.
+fn ignore_count(patterns: &[String]) -> String {
+    match patterns.len() {
+        0 => "-".to_string(),
+        n => n.to_string(),
+    }
+}
 
 fn path_description(idx: usize, entries: &[PathEntry]) -> String {
     let entry = &entries[idx];
@@ -83,7 +101,7 @@ pub fn render(
     };
 
     // Build shortcuts (register click areas only when modal is not shown)
-    let register = !state.modal.show;
+    let register = !state.modal.show && !state.ignore_modal.show;
     let reg = |code: KeyCode| if register { Some(code) } else { None };
 
     let mut items: Vec<(Vec<Span>, Option<KeyCode>)> = vec![
@@ -102,6 +120,14 @@ pub fn render(
                 Span::styled("elete", label_style()),
             ],
             reg(KeyCode::Char('d')),
+        ),
+        gap(),
+        (
+            vec![
+                Span::styled("I", key_style()),
+                Span::styled("gnore", label_style()),
+            ],
+            reg(KeyCode::Char('i')),
         ),
         gap(),
         (
@@ -167,14 +193,13 @@ pub fn render(
         .render(f, area, mouse);
 
     // Determine if we need a description box
-    let selected_idx = state.table_state.selected();
-    let description = selected_idx.and_then(|idx| {
-        if idx < state.config.paths.len() {
-            Some(path_description(idx, &state.config.paths))
-        } else {
-            None
+    let description = match (state.table_state.selected(), state.selected_path()) {
+        (Some(0), _) => Some(global_description(&state.config.global_ignore)),
+        (_, Some(i)) if i < state.config.paths.len() => {
+            Some(path_description(i, &state.config.paths))
         }
-    });
+        _ => None,
+    };
 
     let (table_area, desc_area) = if let Some(ref desc_text) = description {
         // Calculate how many lines the description will take when wrapped
@@ -205,48 +230,47 @@ pub fn render(
         (inner, None)
     };
 
-    // Create table rows
-    let rows: Vec<Row> = state
-        .config
-        .paths
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| {
-            let is_active = matches!(entry.status, PathStatus::Active);
+    // Create table rows: the fixed global row first, then one per path.
+    let global_row = Row::new(vec![
+        Cell::from("G"),
+        Cell::from("(global)").style(Style::default().fg(Color::Cyan)),
+        Cell::from(ignore_count(&state.config.global_ignore)),
+        Cell::from(""),
+        Cell::from(""),
+    ]);
+    let path_rows = state.config.paths.iter().enumerate().map(|(idx, entry)| {
+        let is_active = matches!(entry.status, PathStatus::Active);
 
-            let path_style = if is_active {
-                Style::default()
-            } else {
-                Style::default()
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::CROSSED_OUT)
-            };
+        let path_style = if is_active {
+            Style::default()
+        } else {
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::CROSSED_OUT)
+        };
 
-            let ignore_text = match entry.ignore.len() {
-                0 => "-".to_string(),
-                n => n.to_string(),
-            };
+        let ignore_text = ignore_count(&entry.ignore);
 
-            let abbreviated = abbreviate_home_path(Path::new(&entry.raw));
-            let path_cell = if is_active {
-                Cell::from(abbreviated.as_str().to_owned())
-            } else {
-                Cell::from(Line::from(Span::styled(abbreviated, path_style)))
-            };
+        let abbreviated = abbreviate_home_path(Path::new(&entry.raw));
+        let path_cell = if is_active {
+            Cell::from(abbreviated.as_str().to_owned())
+        } else {
+            Cell::from(Line::from(Span::styled(abbreviated, path_style)))
+        };
 
-            Row::new(vec![
-                Cell::from(format!("{}", idx + 1)),
-                path_cell,
-                Cell::from(ignore_text),
-                Cell::from(entry.mode.as_str()),
-                Cell::from(format!(
-                    "{} {}",
-                    entry.status.symbol(),
-                    entry.status.as_str()
-                )),
-            ])
-        })
-        .collect();
+        Row::new(vec![
+            Cell::from(format!("{}", idx + 1)),
+            path_cell,
+            Cell::from(ignore_text),
+            Cell::from(entry.mode.as_str()),
+            Cell::from(format!(
+                "{} {}",
+                entry.status.symbol(),
+                entry.status.as_str()
+            )),
+        ])
+    });
+    let rows: Vec<Row> = std::iter::once(global_row).chain(path_rows).collect();
 
     let widths = CONFIG_TABLE_WIDTHS;
 
@@ -296,5 +320,8 @@ pub fn render(
     // Render add modal if active
     if state.modal.show {
         render_add_modal(&mut state.modal, f, area, mouse);
+    }
+    if state.ignore_modal.show {
+        render_ignore_modal(&mut state.ignore_modal, f, mouse);
     }
 }

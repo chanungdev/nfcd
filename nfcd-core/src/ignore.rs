@@ -30,6 +30,14 @@ pub struct IgnoreMatch {
 /// Tag stored in each glob's `from` field to tell global patterns apart.
 const GLOBAL_TAG: &str = "<global>";
 
+/// Check that `pattern` compiles as a gitignore line (for UI validation).
+pub fn validate_pattern(pattern: &str) -> Result<(), String> {
+    GitignoreBuilder::new("/")
+        .add_line(None, pattern)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Compiled ignore patterns anchored at a root directory.
 #[derive(Debug, Clone)]
 pub struct IgnoreRules {
@@ -184,5 +192,12 @@ mod tests {
         );
         assert!(r.explain(Path::new("/w/a.txt"), false).is_none());
         assert!(r.explain(Path::new("/other/a.tmp"), false).is_none());
+    }
+
+    #[test]
+    fn validate_pattern_rejects_invalid_glob() {
+        assert!(validate_pattern("*.tmp").is_ok());
+        assert!(validate_pattern("!/자료/").is_ok());
+        assert!(validate_pattern("a{").is_err());
     }
 }
