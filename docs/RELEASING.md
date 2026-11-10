@@ -4,6 +4,8 @@
 
 Development happens directly on the `main` branch. During development, the version in `Cargo.toml` is set to `X.Y.Z-dev`. When ready to release, the `-dev` suffix is removed, the release is tagged, and the version is bumped to the next dev version.
 
+Versioning: nfcd started at `0.1.0`, independent of nfd2nfc's version numbers. While on `0.x`, bump the minor version for breaking changes (e.g. config format) and the patch version for everything else. `1.0.0` comes once the GUI lands and the config format is stable.
+
 ## Release Steps
 
 ### 1. Finalize the version
@@ -14,7 +16,7 @@ Remove the `-dev` suffix from the version in `Cargo.toml`, then commit:
 # Edit Cargo.toml: "X.Y.Z-dev" → "X.Y.Z"
 cargo check
 git add Cargo.toml Cargo.lock
-git commit -m "Release vX.Y.Z"
+git commit -m "chore: release vX.Y.Z"
 git push origin main
 ```
 
@@ -60,8 +62,6 @@ EOF
 )"
 ```
 
-See [v2.0.2](https://github.com/chanungdev/nfcd/releases/tag/v2.0.2) for an example.
-
 ### 4. Set the next dev version
 
 Bump to the next development version:
@@ -70,28 +70,36 @@ Bump to the next development version:
 # Edit Cargo.toml: "X.Y.Z" → "X.Y.(Z+1)-dev"
 cargo check
 git add Cargo.toml Cargo.lock
-git commit -m "Bump version to X.Y.(Z+1)-dev"
+git commit -m "chore: bump version to X.Y.(Z+1)-dev"
 git push origin main
 ```
 
-### 5. Wait for homebrew-core autobump
+### 5. Update the Homebrew tap
 
-nfcd is on the autobump list. BrewTestBot automatically creates a version bump PR within ~3 hours of a new release. Check the PR status:
+The formula lives in [chanungdev/homebrew-tap](https://github.com/chanungdev/homebrew-tap) (`Formula/nfcd.rb`). Point it at the new tag:
 
 ```bash
-gh search prs --repo Homebrew/homebrew-core nfcd --state open
+curl -sL https://github.com/chanungdev/nfcd/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+# In homebrew-tap: update `url` and `sha256` in Formula/nfcd.rb, then commit and push
+git commit -am "nfcd X.Y.Z" && git push
+```
+
+Verify locally:
+
+```bash
+brew update && brew upgrade nfcd
+brew test nfcd
 ```
 
 ## Automated Pipeline
 
-The `release.yml` workflow runs automatically when a `v*` tag is pushed. It creates a GitHub Release with auto-generated release notes. RC tags (e.g., `v2.1.0-rc.1`) are marked as prerelease.
+The `release.yml` workflow runs automatically when a `v*` tag is pushed. It creates a GitHub Release with auto-generated release notes. RC tags (e.g., `v0.2.0-rc.1`) are marked as prerelease.
 
 ## Post-release Checklist
 
 - [ ] Verify the [GitHub Release](https://github.com/chanungdev/nfcd/releases) was created
 - [ ] Write release notes (Step 3) and verify with `gh release view vX.Y.Z`
-- [ ] Check that the autobump PR was created: `gh search prs --repo Homebrew/homebrew-core nfcd --state open`
-- [ ] After the PR is merged, confirm the formula is updated: `brew update && brew info nfcd`
+- [ ] Update the tap formula (Step 5) and confirm: `brew update && brew info chanungdev/tap/nfcd`
 - [ ] Confirm installation works: `brew upgrade nfcd`
 
 ## Updating Screenshots

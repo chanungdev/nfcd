@@ -6,87 +6,186 @@
 
 [![English](https://img.shields.io/badge/lang-English_↗-blue)](../README.md)
 
+NFD 파일 이름을 실시간으로 NFC로 바꾸는 macOS용 감시 도구입니다. 한글 파일 이름이 Windows, Linux, Git, 클라우드에서 깨지지 않게 해 줍니다.
+
 > [!NOTE]
-> nfcd는 [elgar328/nfd2nfc](https://github.com/elgar328/nfd2nfc)의 포크입니다. 설정 경로(`~/.config/nfcd/`)와 LaunchAgent 라벨이 달라 원본과 함께 설치해도 충돌하지 않습니다.
+> nfcd는 [elgar328/nfd2nfc](https://github.com/elgar328/nfd2nfc) 2.1.0을 바탕으로 한 포크입니다(MIT). gitignore 형식의 ignore 규칙을 넣었고, 파일을 놓치지 않도록 감시 기능을 보강했습니다. 바이너리, 설정 경로, LaunchAgent 라벨이 모두 달라서 nfd2nfc와 함께 설치해도 됩니다. [nfd2nfc에서 옮겨 오기](#nfd2nfc에서-옮겨-오기)를 참고하세요.
 
-NFD 파일명을 실시간으로 감지해 NFC로 변환하는 macOS 도구입니다. 다른 OS와 파일을 주고받을 때 생기는 파일명 깨짐 문제를 해결합니다.
+## 왜 필요한가
 
-## NFD/NFC란?
+유니코드는 같은 글자를 두 가지 방식으로 적을 수 있습니다.
 
-유니코드에는 한글, 악센트 문자(é, ü, ñ), 일본어(が, ぱ) 같은 조합 문자를 표현하는 두 가지 정규화 방식이 있습니다:
+- **NFC** (조합형): `가` = `U+AC00`
+- **NFD** (분해형): `가` = `U+1100 U+1161`
 
-- **NFC** (조합형): 하나의 코드포인트 — `가` = `U+AC00`
-- **NFD** (분해형): 기본 문자 + 결합 문자 — `가` = `U+1100 U+1161`
+macOS는 파일 이름을 NFD로 저장하는 경우가 많고, Windows, Linux, 대부분의 웹 서비스는 NFC를 씁니다. 그래서 파일을 주고받으면 다음 문제가 생깁니다.
 
-macOS는 파일명을 NFD로 저장하지만, Windows와 Linux는 NFC를 사용합니다. 이 차이 때문에 다른 OS와 파일을 주고받으면 다음과 같은 문제가 생깁니다:
+- 한글이 자모로 풀려서 보입니다 (한글 → ㅎㅏㄴㄱㅡㄹ).
+- Git이 같은 파일을 untracked나 modified로 표시합니다.
+- 클라우드 동기화나 압축 도구가 경로를 찾지 못합니다.
 
-- 한글이 자모로 풀어져서 표시됨 (예: 한글 → ㅎㅏㄴㄱㅡㄹ)
-- 악센트 문자가 잘못 표시되거나 정렬이 깨짐
-- Git이 같은 파일을 변경된 것으로 인식
-- 클라우드 동기화나 압축 해제 시 경로를 찾지 못함
+nfcd는 백그라운드에서 돌면서 파일 이름이 생기는 대로 고칩니다.
 
-**nfcd**는 TUI와 CLI, 그리고 백그라운드 감시 서비스를 통해 이 문제를 자동으로 해결합니다.
+## 기능
 
-## 주요 기능
+- **실시간 변환:** LaunchAgent가 FSEvents로 폴더를 감시하다가 NFD 이름을 NFC로 바꿉니다.
+- **파일을 놓치지 않음**
+  - 감시 폴더에 폴더를 옮기거나 압축을 풀어 넣으면, 그 안에 있는 파일까지 모두 바꿉니다.
+  - 감시 데몬이 꺼져 있던 동안 생긴 파일은 다음에 시작할 때 바꿉니다.
+  - macOS가 파일 시스템 이벤트를 놓쳤다고 알려 오면 감시 폴더를 다시 스캔합니다.
+- **gitignore 형식의 ignore 규칙:** global 패턴, 경로별 패턴, 폴더별 `.nfcignore` 파일을 쓸 수 있고 `!`로 예외를 둘 수 있습니다. 어떤 규칙 때문에 제외됐는지는 `nfcd check-ignore`로 확인합니다.
+- **설정 즉시 반영:** `config.toml`을 고치면 감시 데몬을 재시작하지 않아도 바로 적용됩니다.
+- **TUI와 CLI:** 키보드와 마우스로 쓰는 TUI가 있고, 스크립트에서 쓰기 좋은 CLI는 `--json`과 `--dry-run`을 지원합니다.
 
-- **실시간 감시** — NFD 파일명이 생성되면 즉시 NFC로 변환
-- **감시 경로 설정** — `recursive`/`children` 모드와 gitignore 형식의 ignore 패턴으로 변환 범위를 세밀하게 조절
-- **수동 변환** — 파일명을 NFD/NFC 간 변환, 폴더 단위 재귀 변환 지원
-- **로그 뷰어** — 과거 감시 로그 조회 및 실시간 로그 스트리밍
-- **직관적인 TUI** — 화면에 모든 단축키가 표시되며 마우스 조작도 가능
-- **CLI 모드** — 스크립트와 AI 에이전트 친화적, `--json` 출력과 `--dry-run` 지원
+## 설치
 
-## Home
+### Homebrew
 
-<img src="https://github.com/elgar328/nfd2nfc/releases/download/assets/home.png" alt="Home" width="750" />
+```bash
+brew install chanungdev/tap/nfcd
+```
 
-Home 탭에서 watcher 서비스의 현재 상태를 확인하고, 시작/중지/재시작할 수 있습니다.
+### 소스로 빌드
 
-## Config
+[Rust](https://rustup.rs)가 필요합니다.
 
-<img src="https://github.com/elgar328/nfd2nfc/releases/download/assets/config.png" alt="Config" width="750" />
+```bash
+git clone https://github.com/chanungdev/nfcd.git
+cd nfcd
+cargo install --path nfcd --locked
+cargo install --path nfcd-watcher --locked
+```
 
-Config 탭에서 감시할 디렉토리를 관리합니다. 각 경로의 모드(`recursive` 또는 `children`), ignore 패턴 개수, 유효성 상태를 확인할 수 있습니다.
+`nfcd`는 같은 폴더에서 `nfcd-watcher`를 찾습니다. 그래서 두 바이너리를 같은 위치에 설치해야 합니다(기본 위치는 `~/.cargo/bin`).
 
-### Ignore 패턴
+### 전체 디스크 접근 권한
 
-`~/.config/nfcd/config.toml`에 gitignore 형식의 패턴으로 제외할 파일과 폴더를 지정합니다. Config 탭에서 `i`로 편집할 수도 있습니다 (`G` 행이 global 패턴):
+`~/Documents`, `~/Downloads` 같은 폴더는 macOS가 보호합니다. 폴더 접근 허용 창이 계속 뜨거나 파일 이름이 바뀌지 않으면 감시 바이너리에 **전체 디스크 접근 권한**을 주세요.
+
+1. `which nfcd-watcher`로 바이너리 경로를 확인합니다.
+2. **시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한**을 엽니다.
+3. 목록에 `nfcd-watcher`가 이미 있으면 완전히 지웁니다. 토글을 끄지 말고 `-` 버튼으로 지워야 합니다.
+4. `+`를 누르고 `Cmd+Shift+G`로 1단계의 경로를 붙여 넣어 추가합니다.
+5. `nfcd status`에서 **Full Disk Access**가 `granted`인지 확인합니다.
+
+업그레이드할 때마다 바이너리가 바뀌므로 이 과정을 다시 해야 합니다.
+
+> **참고:** macOS Tahoe 26.1–26.2에서는 시스템 버그 때문에 명령줄 바이너리에 전체 디스크 접근 권한이 적용되지 않습니다. macOS 26.3에서 고쳐졌습니다.
+
+## 빠른 시작
+
+```bash
+nfcd config add ~/Downloads                          # 감시 폴더 추가 (기본 모드는 recursive)
+nfcd convert ~/Downloads --mode recursive --dry-run  # 이미 있는 NFD 이름 미리 보기
+nfcd watcher start
+nfcd status
+```
+
+인자 없이 `nfcd`만 실행하면 TUI가 열립니다. 처음 실행하면 감시 데몬이 LaunchAgent로 등록되고, 그다음부터는 로그인할 때 자동으로 시작됩니다.
+
+> [!IMPORTANT]
+> 감시 데몬은 시작할 때 감시 폴더 안에 이미 있는 NFD 이름을 모두 바꿉니다. ignore된 파일은 건드리지 않습니다. 먼저 `nfcd convert <path> --mode recursive --dry-run`으로 어떤 파일이 바뀔지 확인하세요.
+
+## 설정
+
+설정 파일은 `~/.config/nfcd/config.toml`입니다. 직접 편집해도 되고, TUI의 Config 탭이나 `nfcd config` 명령을 써도 됩니다. 감시 데몬이 바뀐 내용을 알아서 다시 읽습니다. 파일에 오류가 있으면 이전 설정을 그대로 쓰고 경고를 로그에 남깁니다.
 
 ```toml
 [global]                        # 모든 경로에 적용
-ignore = [".git/", "node_modules/", "*.app/"]
+ignore = [".git/", "node_modules/", "*.app/", "*.photoslibrary/"]
 
 [[paths]]
 path = "~/Downloads"
 mode = "recursive"
 ignore = ["*.crdownload", "/torrents/*", "!/torrents/keep/"]
+
+[[paths]]
+path = "~/Desktop"
+mode = "children"
 ```
 
-`*`, `**`, `!` 예외, 끝의 `/`(폴더 전용), 앞의 `/`(해당 경로 기준 고정)를 지원합니다. 한글 이름은 NFD/NFC 형태와 관계없이 매칭됩니다.
+### 모드
 
-다른 항목 안에 있는 경로를 따로 등록하면, 그 아래는 global 패턴과 자기 패턴만 적용됩니다. 상위 항목이 ignore한 폴더를 다시 감시할 때 사용합니다.
+| 모드 | 변환 범위 |
+|---|---|
+| `recursive` | 폴더와 그 아래 전체 |
+| `children` | 폴더 바로 아래 항목만 |
 
-감시 폴더 안에 `.nfcignore` 파일을 두면 `.gitignore`처럼 그 폴더와 하위에 패턴이 적용됩니다. 설정 파일보다 우선하고, 깊은 폴더의 파일이 얕은 폴더의 파일보다 우선합니다. ignore된 폴더 안의 파일은 읽지 않습니다.
+### Ignore 패턴
 
-`nfcd check-ignore <path>`로 경로가 ignore되는지, 어느 패턴 때문인지 확인할 수 있습니다.
+`.gitignore`와 같은 문법을 씁니다.
 
-watcher는 설정 변경을 자동으로 반영합니다. 잘못된 설정은 무시하고 이전 설정을 유지합니다.
+- `*`와 `**`: 와일드카드
+- `!`: 예외
+- 끝에 붙인 `/`: 폴더에만 적용
+- 앞에 붙인 `/`: 감시 경로를 기준으로 위치 고정
 
-## Logs
+한글 이름은 NFD로 저장돼 있든 NFC로 저장돼 있든 똑같이 매칭됩니다.
 
-<img src="https://github.com/elgar328/nfd2nfc/releases/download/assets/logs.png" alt="Logs" width="750" />
+규칙은 아래 순서로 확인하고, 처음 매칭된 규칙을 따릅니다.
 
-Logs 탭에서 과거 watcher 로그를 조회하거나 실시간으로 확인할 수 있습니다. 로그는 macOS 시스템 로그에 기록되며, 보관 기간은 OS가 관리합니다.
+1. `.nfcignore` 파일 (깊은 폴더에 있는 파일부터)
+2. 해당 경로의 `ignore` 패턴
+3. `[global] ignore`
 
-## Browser
+Git과 마찬가지로, ignore된 폴더 안에 있는 파일은 `!`로 다시 포함시킬 수 없습니다. ignore된 폴더 안의 `.nfcignore`도 읽지 않습니다.
 
-<img src="https://github.com/elgar328/nfd2nfc/releases/download/assets/browser.png" alt="Browser" width="750" />
+### `.nfcignore`
 
-Browser 탭에서 파일과 디렉토리의 정규화 형식(NFD/NFC)을 확인하고 직접 변환할 수 있습니다. Watcher는 새로 생성/수정된 파일만 감지하므로, 기존 NFD 파일명은 이 탭에서 변환하세요.
+감시 폴더 안 어디에든 `.nfcignore` 파일을 두면, 그 폴더와 하위 폴더에 패턴을 더할 수 있습니다. 문법은 `.gitignore`와 같고, 패턴은 파일이 있는 폴더를 기준으로 합니다.
 
-## CLI 모드
+```gitignore
+# ~/Downloads/projects/.nfcignore
+build/
+*.log
+```
 
-인수 없이 `nfcd`를 실행하면 TUI가 실행됩니다. 커맨드를 추가하면 CLI 모드로 동작합니다. 각 커맨드의 세부 옵션은 `nfcd <command> --help`로 확인할 수 있습니다.
+`.nfcignore`가 바뀌면 감시 데몬이 다시 스캔합니다. 그래서 더 이상 제외되지 않는 파일도 바뀝니다.
+
+### 다른 경로 안에 등록한 경로
+
+어떤 경로를 다른 경로 안에 따로 등록하면, 그 아래는 새로 등록한 경로가 맡습니다. 거기에는 global 패턴과 그 경로 자신의 패턴만 적용되고, 바깥 경로의 패턴은 적용되지 않습니다. 바깥 경로에서 ignore한 폴더를 다시 감시하고 싶을 때 이렇게 등록하면 됩니다.
+
+이렇게 안쪽에 등록한 경로에 자기 패턴이 없고 바깥 경로가 그 경로를 ignore하지도 않으면, 따로 등록할 의미가 없으므로 **redundant**로 표시합니다.
+
+### 경로 확인
+
+```
+$ nfcd check-ignore ~/Downloads/a.crdownload ~/Downloads/projects/app.log ~/Downloads/note.txt
+~/Downloads/a.crdownload: ignored by "*.crdownload" from #1 ~/Downloads
+~/Downloads/projects/app.log: ignored by "*.log" from ~/Downloads/projects/.nfcignore
+~/Downloads/note.txt: not ignored (watched by #1 ~/Downloads)
+```
+
+`git check-ignore`처럼, 넘긴 경로 중 ignore된 것이 하나도 없으면 종료 코드 1을 돌려줍니다.
+
+## TUI
+
+인자 없이 `nfcd`를 실행하면 TUI가 열립니다. 쓸 수 있는 단축키가 모두 화면에 표시되고, 마우스도 쓸 수 있습니다.
+
+| 탭 | 용도 |
+|---|---|
+| **Home** | 감시 데몬 상태를 보고, 시작·중지·재시작합니다. |
+| **Config** | 감시 경로와 ignore 패턴을 관리합니다 (아래 키 참고). |
+| **Logs** | 지난 로그를 보거나 새 로그를 실시간으로 따라갑니다. 로그는 macOS 시스템 로그에 저장됩니다. |
+| **Browser** | 파일 이름이 NFC인지 NFD인지 보고 직접 변환합니다. 여기서도 ignore 규칙이 적용됩니다. |
+
+Config 탭 키:
+
+| 키 | 동작 |
+|---|---|
+| `a` | 경로 추가 |
+| `d` | 경로 삭제 |
+| `i` | ignore 패턴 편집. 맨 위 `G` 행은 global 패턴입니다. |
+| `m` | 모드 전환 (`recursive` / `children`) |
+| `o` | 경로 정렬 |
+| `+` / `-` | 경로를 위나 아래로 이동 |
+| `s` | 저장 |
+| `Esc` | 변경 취소 |
+
+## CLI
+
+명령을 붙여 실행하면 CLI로 동작합니다. 전체 옵션은 `nfcd <command> --help`로 볼 수 있습니다.
 
 ```
 nfcd status [--json]
@@ -101,76 +200,64 @@ nfcd log show [--last 30m] [--json]
 nfcd log stream [--json]
 ```
 
-사용 예시:
-
 ```
 $ nfcd status
 Watcher:          running
-Version:          2.1.0
-Binary:           ~/.cargo/bin/nfcd
-Watcher binary:   ~/.cargo/bin/nfcd-watcher
+Version:          0.1.0
+Binary:           /opt/homebrew/bin/nfcd
+Watcher binary:   /opt/homebrew/bin/nfcd-watcher
 Config:           ~/.config/nfcd/config.toml
 Plist:            ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
-Registered paths: 6 total (4 active, 1 redundant, 1 not found)
+Registered paths: 3 total (2 active, 1 redundant)
 Full Disk Access: granted
 Update:           up to date
 ```
 
-## 제한 사항
+## nfd2nfc에서 옮겨 오기
 
-nfcd는 macOS가 파일명을 NFD로 저장하여 다른 OS에서 파일명이 깨지는 문제를 근본적으로 해결합니다. 다만 브라우저, 이메일 서비스, 클라우드 스토리지, 메시징 앱, 압축 도구 등은 파일을 주고받는 과정에서 자체적으로 파일명을 NFD로 변환할 수 있습니다. 이는 각 앱 고유의 동작으로, nfcd가 관여할 수 없는 영역입니다.
+nfcd는 nfd2nfc의 설정 파일을 읽지 않고, 설정 형식도 다릅니다. nfd2nfc의 `action = "ignore"` 항목은 바깥 경로의 패턴으로 바꿔 적습니다.
 
-## 설치 방법
+```toml
+# nfd2nfc (~/.config/nfd2nfc/config.toml)
+[[paths]]
+path = "~/Documents"
+action = "watch"
+mode = "recursive"
 
-소스에서 빌드합니다 ([Rust](https://rustup.rs) 필요):
+[[paths]]
+path = "~/Documents/Obsidian/.git"
+action = "ignore"
+mode = "recursive"
 
-```bash
-git clone https://github.com/chanungdev/nfcd.git
-cd nfcd
-cargo install --path nfcd
-cargo install --path nfcd-watcher
+# nfcd (~/.config/nfcd/config.toml)
+[[paths]]
+path = "~/Documents"
+mode = "recursive"
+ignore = ["/Obsidian/.git/"]
 ```
 
-두 바이너리는 같은 디렉터리에 설치되어야 합니다 (기본값 `~/.cargo/bin`).
+설정 파일에 `action`이 남아 있으면 nfcd가 읽지 않습니다.
 
-실행:
+옮기는 순서:
 
-```bash
-nfcd
-```
+1. nfd2nfc를 멈춥니다: `nfd2nfc watcher stop`. 같은 폴더를 두 프로그램이 함께 감시하지 않게 하세요.
+2. `~/.config/nfcd/config.toml`을 작성합니다.
+3. nfcd를 설치하고 시작합니다: `nfcd watcher start`.
+4. nfcd를 계속 쓰기로 했다면 nfd2nfc를 지웁니다. 예를 들어 `brew uninstall nfd2nfc`를 실행하고 `~/Library/LaunchAgents/io.github.elgar328.nfd2nfc.plist`도 지웁니다. plist를 지우지 않으면 로그인할 때 nfd2nfc가 다시 시작됩니다.
 
-처음 실행하면 watcher 서비스가 LaunchAgent로 자동 등록됩니다. 이후 TUI나 CLI에서 시작/중지할 수 있습니다.
+## 한계
 
-### 권한 설정
+nfcd는 내 Mac에 있는 파일 이름을 고칩니다. 하지만 브라우저, 메일 서비스, 클라우드 저장소, 메신저, 압축 도구 같은 다른 프로그램이 파일을 보내거나 받을 때 이름을 NFD로 바꿀 수 있습니다. 이건 nfcd가 막을 수 없습니다.
 
-Watcher가 파일을 변환할 때 macOS가 폴더 접근 권한을 반복적으로 요청한다면, watcher 바이너리에 **전체 디스크 접근 권한**을 부여하세요:
-
-1. `which nfcd-watcher`를 실행하여 바이너리 경로 확인
-2. **시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한** 열기
-3. 이미 `nfcd-watcher`가 목록에 있다면 **토글을 끄는 것이 아니라 완전히 제거** (항목 선택 후 `-` 버튼)
-4. `+` 클릭 → `Cmd+Shift+G`를 눌러 1단계의 경로를 입력하고 추가
-5. `nfcd status`를 실행하여 **Full Disk Access**가 `granted`로 표시되는지 확인
-
-새 버전으로 업데이트한 후에는 위 단계를 다시 진행하여 전체 디스크 접근 권한을 다시 설정해야 합니다.
-
-> **참고:** macOS Tahoe 26.1~26.2에서는 시스템 버그로 인해 커맨드라인 바이너리에 전체 디스크 접근 권한이 적용되지 않습니다. 이 문제는 macOS 26.3에서 해결되었습니다.
-
-### 업그레이드
+## 삭제
 
 ```bash
-git pull
-cargo install --path nfcd
-cargo install --path nfcd-watcher
+nfcd watcher stop
+rm ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
+brew uninstall nfcd                      # 또는: cargo uninstall nfcd nfcd-watcher
+rm -r ~/.config/nfcd                     # 선택: 설정까지 지울 때
 ```
 
-전체 디스크 접근 권한을 사용 중이라면, 업그레이드 후 해당 권한을 다시 설정해야 합니다.
+## 라이선스
 
-## 제거 방법
-
-```bash
-cargo uninstall nfcd nfcd-watcher
-```
-
-## License
-
-[MIT](../LICENSE)
+[MIT](../LICENSE). elgar328의 [nfd2nfc](https://github.com/elgar328/nfd2nfc)를 바탕으로 합니다.
