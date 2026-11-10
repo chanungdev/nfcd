@@ -1,13 +1,14 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 
 use serde_json::json;
 
 use nfcd_core::config::{self, IgnoreScope, PathEntry, PathMode, PathStatus};
 use nfcd_core::constants::{CONFIG_PATH, PLIST_PATH, SERVICE_LABEL};
+use nfcd_core::ignore::PatternSource;
 use nfcd_core::normalizer::{self, NormalizationTarget, get_actual_file_name};
 use nfcd_core::utils::{abbreviate_home_path, expand_tilde};
 
@@ -28,8 +29,108 @@ pub fn run(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
             json,
         } => cmd_convert(&path, &mode, &target, dry_run, json),
+        Command::CheckIgnore { paths, json } => cmd_check_ignore(&paths, json),
         Command::Log { action } => cmd_log(action),
     }
+}
+
+// === Check-ignore ===
+
+/// Resolve a user-given path the way the watcher sees it: canonical parent plus
+/// the final component as-is (a symlink is checked as itself). Works for paths
+/// that don't exist; those count as directories only with a trailing '/'.
+fn resolve_for_check(path: &str) -> (PathBuf, bool) {
+    let expanded = expand_tilde(path);
+    let abs = std::path::absolute(&expanded).unwrap_or(expanded);
+    let resolved = match (abs.parent(), abs.file_name()) {
+        (Some(parent), Some(name)) => fs::canonicalize(parent)
+            .map(|p| p.join(name))
+            .unwrap_or_else(|_| abs.clone()),
+        _ => abs.clone(),
+    };
+    let is_dir = match fs::symlink_metadata(&resolved) {
+        Ok(m) => m.is_dir(),
+        Err(_) => path.ends_with('/'),
+    };
+    (resolved, is_dir)
+}
+
+fn cmd_check_ignore(paths: &[String], json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let (cfg, err) = config::load_config();
+    if let Some(e) = err {
+        return Err(format!("{}: {e}", e.user_message()).into());
+    }
+    let entries = cfg.active_entries();
+    // (1-based config index, display path) of an active entry.
+    let entry_info = |canonical: &Path| {
+        let idx = cfg
+            .paths
+            .iter()
+            .position(|p| p.canonical.as_deref() == Some(canonical));
+        match idx {
+            Some(i) => (Some(i + 1), abbreviate_path_str(&cfg.paths[i].raw)),
+            None => (None, abbreviate_home_path(canonical)),
+        }
+    };
+
+    let mut any_ignored = false;
+    let mut results = Vec::new();
+    for path in paths {
+        let (resolved, is_dir) = resolve_for_check(path);
+        let entry = config::effective_entry(&resolved, &entries);
+        let matched = entry.and_then(|e| e.ignore.explain(&resolved, is_dir));
+        let ignored = matched.as_ref().is_some_and(|m| m.ignored);
+        any_ignored |= ignored;
+
+        let status = match (entry, ignored) {
+            (None, _) => "not_watched",
+            (Some(_), true) => "ignored",
+            (Some(_), false) => "not_ignored",
+        };
+        let info = entry.map(|e| entry_info(&e.canonical));
+        let entry_name = info.as_ref().map(|(i, p)| match i {
+            Some(i) => format!("#{i} {p}"),
+            None => p.clone(),
+        });
+        let source = matched.as_ref().map(|m| match m.source {
+            PatternSource::Global => "global".to_string(),
+            PatternSource::Entry => entry_name.clone().unwrap_or_default(),
+        });
+
+        if json {
+            results.push(json!({
+                "path": path,
+                "status": status,
+                "entry": info.as_ref().map(|(i, p)| json!({"index": i, "path": p})),
+                "pattern": matched.as_ref().map(|m| m.pattern.clone()),
+                "source": matched.as_ref().map(|m| match m.source {
+                    PatternSource::Global => "global",
+                    PatternSource::Entry => "entry",
+                }),
+            }));
+            continue;
+        }
+        let detail = match (&entry_name, &matched, &source) {
+            (None, _, _) => "not watched (no entry covers this path)".to_string(),
+            (Some(e), None, _) => format!("not ignored (watched by {e})"),
+            (Some(_), Some(m), Some(src)) if m.ignored => {
+                format!("ignored by \"{}\" from {src}", m.pattern)
+            }
+            (Some(_), Some(m), Some(src)) => {
+                format!("not ignored, re-included by \"{}\" from {src}", m.pattern)
+            }
+            (Some(_), Some(_), None) => unreachable!("source is set whenever a pattern matched"),
+        };
+        println!("{path}: {detail}");
+    }
+
+    if json {
+        println!("{}", json!(results));
+    }
+    if !any_ignored {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 // === Status ===

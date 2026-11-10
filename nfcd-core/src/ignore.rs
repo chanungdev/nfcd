@@ -4,10 +4,31 @@
 //! `canonicalize` may be NFD. Both sides are normalized to NFC before matching,
 //! otherwise Korean patterns would silently never match.
 
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::Match;
+use ignore::gitignore::{Gitignore, GitignoreBuilder, Glob};
 use log::warn;
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
+
+/// Where a pattern was defined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternSource {
+    Global,
+    Entry,
+}
+
+/// The pattern that decided a path's ignore status (for `check-ignore`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoreMatch {
+    /// The pattern as written, including a leading `!`.
+    pub pattern: String,
+    pub source: PatternSource,
+    /// false when the deciding pattern is a `!` negation.
+    pub ignored: bool,
+}
+
+/// Tag stored in each glob's `from` field to tell global patterns apart.
+const GLOBAL_TAG: &str = "<global>";
 
 /// Compiled ignore patterns anchored at a root directory.
 #[derive(Debug, Clone)]
@@ -26,9 +47,11 @@ impl IgnoreRules {
     pub fn new(root: &Path, global: &[String], local: &[String]) -> Self {
         let root = to_nfc(root);
         let mut builder = GitignoreBuilder::new(&root);
-        for pattern in global.iter().chain(local) {
+        let global_tag = || Some(PathBuf::from(GLOBAL_TAG));
+        let tagged = global.iter().map(|p| (global_tag(), p));
+        for (from, pattern) in tagged.chain(local.iter().map(|p| (None, p))) {
             let pattern: String = pattern.nfc().collect();
-            if let Err(e) = builder.add_line(None, &pattern) {
+            if let Err(e) = builder.add_line(from, &pattern) {
                 warn!("Invalid ignore pattern {:?}: {}", pattern, e);
             }
         }
@@ -39,17 +62,32 @@ impl IgnoreRules {
         Self { root, matcher }
     }
 
-    /// Whether `path` (or any of its parents up to the root) is ignored.
-    /// Paths outside the root (or the root itself) are never ignored.
-    pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+    fn matched(&self, path: &Path, is_dir: bool) -> Match<&Glob> {
         let path = to_nfc(path);
         // matched_path_or_any_parents panics on paths outside the root.
         if path == self.root || !path.starts_with(&self.root) {
-            return false;
+            return Match::None;
         }
-        self.matcher
-            .matched_path_or_any_parents(&path, is_dir)
-            .is_ignore()
+        self.matcher.matched_path_or_any_parents(&path, is_dir)
+    }
+
+    /// Whether `path` (or any of its parents up to the root) is ignored.
+    /// Paths outside the root (or the root itself) are never ignored.
+    pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        self.matched(path, is_dir).is_ignore()
+    }
+
+    /// The pattern that decides `path`'s status, if any matches.
+    pub fn explain(&self, path: &Path, is_dir: bool) -> Option<IgnoreMatch> {
+        self.matched(path, is_dir).inner().map(|g| IgnoreMatch {
+            pattern: g.original().to_string(),
+            source: if g.from() == Some(Path::new(GLOBAL_TAG)) {
+                PatternSource::Global
+            } else {
+                PatternSource::Entry
+            },
+            ignored: !g.is_whitelist(),
+        })
     }
 }
 
@@ -129,5 +167,22 @@ mod tests {
     fn invalid_pattern_skipped() {
         let r = rules(&["a{", "*.tmp"], &[]);
         assert!(r.is_ignored(Path::new("/w/a.tmp"), false));
+    }
+
+    #[test]
+    fn explain_reports_pattern_and_source() {
+        let r = rules(&[".git/"], &["*.tmp", "!keep.tmp"]);
+        let m = r.explain(Path::new("/w/x/.git/HEAD"), false).unwrap();
+        assert_eq!(
+            (m.pattern.as_str(), m.source, m.ignored),
+            (".git/", PatternSource::Global, true)
+        );
+        let m = r.explain(Path::new("/w/keep.tmp"), false).unwrap();
+        assert_eq!(
+            (m.pattern.as_str(), m.source, m.ignored),
+            ("!keep.tmp", PatternSource::Entry, false)
+        );
+        assert!(r.explain(Path::new("/w/a.txt"), false).is_none());
+        assert!(r.explain(Path::new("/other/a.tmp"), false).is_none());
     }
 }

@@ -66,6 +66,8 @@ Patterns support `*`, `**`, `!` negation, trailing `/` for directories, and lead
 
 A path nested inside another entry takes over its own subtree, using only the global patterns and its own. Use this to watch a directory that a parent entry ignores.
 
+Run `nfcd check-ignore <path>` to see whether a path is ignored and which pattern decides it.
+
 Restart the watcher after editing the config.
 
 ## Logs
@@ -92,6 +94,7 @@ nfcd config add <path> [--mode recursive|children] [--dry-run] [--json]
 nfcd config remove <index> [--dry-run] [--json]
 nfcd config sort
 nfcd convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
+nfcd check-ignore <path>... [--json]
 nfcd log show [--last 30m] [--json]
 nfcd log stream [--json]
 ```

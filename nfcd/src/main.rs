@@ -51,6 +51,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show whether paths are ignored and which pattern decides it.
+    /// Exits 0 if any path is ignored, 1 otherwise (like git check-ignore).
+    CheckIgnore {
+        /// Paths to check (need not exist; a trailing '/' marks a directory)
+        #[arg(required = true)]
+        paths: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// View watcher logs (defaults to 'show --last 30m' if no subcommand)
     Log {
         #[command(subcommand)]

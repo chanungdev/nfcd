@@ -66,6 +66,8 @@ ignore = ["*.crdownload", "/torrents/*", "!/torrents/keep/"]
 
 다른 항목 안에 있는 경로를 따로 등록하면, 그 아래는 global 패턴과 자기 패턴만 적용됩니다. 상위 항목이 ignore한 폴더를 다시 감시할 때 사용합니다.
 
+`nfcd check-ignore <path>`로 경로가 ignore되는지, 어느 패턴 때문인지 확인할 수 있습니다.
+
 설정을 바꾼 뒤에는 watcher를 재시작해야 합니다.
 
 ## Logs
@@ -92,6 +94,7 @@ nfcd config add <path> [--mode recursive|children] [--dry-run] [--json]
 nfcd config remove <index> [--dry-run] [--json]
 nfcd config sort
 nfcd convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
+nfcd check-ignore <path>... [--json]
 nfcd log show [--last 30m] [--json]
 nfcd log stream [--json]
 ```
