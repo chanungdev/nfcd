@@ -78,7 +78,7 @@ fn cmd_check_ignore(paths: &[String], json: bool) -> Result<(), Box<dyn std::err
     for path in paths {
         let (resolved, is_dir) = resolve_for_check(path);
         let entry = config::effective_entry(&resolved, &entries);
-        let matched = entry.and_then(|e| e.ignore.explain(&resolved, is_dir));
+        let matched = entry.and_then(|e| e.explain(&resolved, is_dir));
         let ignored = matched.as_ref().is_some_and(|m| m.ignored);
         any_ignored |= ignored;
 
@@ -92,9 +92,10 @@ fn cmd_check_ignore(paths: &[String], json: bool) -> Result<(), Box<dyn std::err
             Some(i) => format!("#{i} {p}"),
             None => p.clone(),
         });
-        let source = matched.as_ref().map(|m| match m.source {
+        let source = matched.as_ref().map(|m| match &m.source {
             PatternSource::Global => "global".to_string(),
             PatternSource::Entry => entry_name.clone().unwrap_or_default(),
+            PatternSource::File(f) => abbreviate_home_path(f),
         });
 
         if json {
@@ -106,6 +107,11 @@ fn cmd_check_ignore(paths: &[String], json: bool) -> Result<(), Box<dyn std::err
                 "source": matched.as_ref().map(|m| match m.source {
                     PatternSource::Global => "global",
                     PatternSource::Entry => "entry",
+                    PatternSource::File(_) => "nfcignore",
+                }),
+                "file": matched.as_ref().and_then(|m| match &m.source {
+                    PatternSource::File(f) => Some(abbreviate_home_path(f)),
+                    _ => None,
                 }),
             }));
             continue;
@@ -894,10 +900,16 @@ fn cmd_convert_dry_run(
             let scope = load_ignore_scope(path)?;
             // Same matching as normalize_directory: rules are rooted at canonical paths.
             let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            // (dir, .nfcignore chain of its ancestors, read its own .nfcignore)
             let mut queue = VecDeque::new();
-            queue.push_back(path.to_path_buf());
+            queue.push_back((path.to_path_buf(), scope.chain_for(&canonical), true));
 
-            while let Some(dir) = queue.pop_front() {
+            while let Some((dir, chain, read_own)) = queue.pop_front() {
+                let chain = match dir.strip_prefix(path) {
+                    Ok(rel) if read_own && rel.as_os_str().is_empty() => chain.enter(&canonical),
+                    Ok(rel) if read_own => chain.enter(&canonical.join(rel)),
+                    _ => chain,
+                };
                 if let Ok(entries) = fs::read_dir(&dir) {
                     for entry in entries.filter_map(|e| e.ok()) {
                         let entry_path = entry.path();
@@ -906,11 +918,11 @@ fn cmd_convert_dry_run(
                         let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
                         if let Ok(rel) = entry_path.strip_prefix(path) {
                             let full = canonical.join(rel);
-                            if scope.is_ignored(&full, is_dir) {
+                            if scope.is_ignored(&full, is_dir, &chain) {
                                 // Same as normalize_directory: descend (without listing) only
                                 // if a nested entry re-includes something below.
                                 if recursive && is_dir && scope.has_entry_below(&full) {
-                                    queue.push_back(entry_path);
+                                    queue.push_back((entry_path, chain.clone(), false));
                                 }
                                 continue;
                             }
@@ -921,7 +933,7 @@ fn cmd_convert_dry_run(
                         }
 
                         if recursive && entry_path.is_dir() && !entry_path.is_symlink() {
-                            queue.push_back(entry_path);
+                            queue.push_back((entry_path, chain.clone(), true));
                         }
                     }
                 }

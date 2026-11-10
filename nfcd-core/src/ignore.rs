@@ -11,11 +11,16 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 /// Where a pattern was defined.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatternSource {
     Global,
     Entry,
+    /// A `.nfcignore` file (its path).
+    File(PathBuf),
 }
+
+/// Per-directory ignore file, applied like `.gitignore`.
+pub const NFCIGNORE: &str = ".nfcignore";
 
 /// The pattern that decided a path's ignore status (for `check-ignore`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +75,30 @@ impl IgnoreRules {
         Self { root, matcher }
     }
 
+    /// Rules from `dir/.nfcignore`, rooted at `dir`. None if the file is absent or unreadable.
+    pub fn from_dir(dir: &Path) -> Option<Self> {
+        let file = dir.join(NFCIGNORE);
+        let content = std::fs::read_to_string(&file).ok()?;
+        let root = to_nfc(dir);
+        let mut builder = GitignoreBuilder::new(&root);
+        for line in content.lines() {
+            let line: String = line.nfc().collect();
+            if let Err(e) = builder.add_line(Some(file.clone()), &line) {
+                warn!("Invalid pattern {:?} in {}: {}", line, file.display(), e);
+            }
+        }
+        let matcher = builder.build().unwrap_or_else(|e| {
+            warn!("Failed to build {}: {}", file.display(), e);
+            Gitignore::empty()
+        });
+        Some(Self { root, matcher })
+    }
+
+    /// NFC root these rules are anchored at.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn matched(&self, path: &Path, is_dir: bool) -> Match<&Glob> {
         let path = to_nfc(path);
         // matched_path_or_any_parents panics on paths outside the root.
@@ -89,10 +118,10 @@ impl IgnoreRules {
     pub fn explain(&self, path: &Path, is_dir: bool) -> Option<IgnoreMatch> {
         self.matched(path, is_dir).inner().map(|g| IgnoreMatch {
             pattern: g.original().to_string(),
-            source: if g.from() == Some(Path::new(GLOBAL_TAG)) {
-                PatternSource::Global
-            } else {
-                PatternSource::Entry
+            source: match g.from() {
+                Some(f) if f == Path::new(GLOBAL_TAG) => PatternSource::Global,
+                Some(f) => PatternSource::File(f.to_path_buf()),
+                None => PatternSource::Entry,
             },
             ignored: !g.is_whitelist(),
         })

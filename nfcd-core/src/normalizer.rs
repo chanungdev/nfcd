@@ -1,4 +1,4 @@
-use crate::config::IgnoreScope;
+use crate::config::{IgnoreScope, NfcIgnoreChain};
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::ffi::CStr;
@@ -154,17 +154,17 @@ pub fn normalize_single_file(
     }))
 }
 
+/// Subdirectory to recurse into, and whether it is ignored (descended only for a nested entry).
+type Subdir = Option<(PathBuf, bool)>;
+
 /// Process a single directory entry: rename if needed, return subdirectory path for recursion.
 fn process_entry(
     entry: &fs::DirEntry,
     target: NormalizationTarget,
     target_folder: &Path,
     recursive: bool,
-    ignore: Option<(&IgnoreScope, &Path)>,
-) -> (
-    Result<Option<ConversionResult>, ConversionError>,
-    Option<PathBuf>,
-) {
+    ignore: Option<(&IgnoreScope, &Path, &NfcIgnoreChain)>,
+) -> (Result<Option<ConversionResult>, ConversionError>, Subdir) {
     let path = entry.path();
 
     let name = match path.file_name() {
@@ -182,12 +182,12 @@ fn process_entry(
     // of `path` (the caller may pass a relative or non-canonical target folder).
     // file_type() comes from readdir (d_type), so no extra syscall.
     let mut skip_rename = false;
-    if let Some((scope, canonical_target)) = ignore
+    if let Some((scope, canonical_target, chain)) = ignore
         && let Ok(rel) = path.strip_prefix(target_folder)
     {
         let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
         let full = canonical_target.join(rel);
-        if scope.is_ignored(&full, is_dir) {
+        if scope.is_ignored(&full, is_dir, chain) {
             if !(is_dir && scope.has_entry_below(&full)) {
                 return (Ok(None), None);
             }
@@ -231,7 +231,8 @@ fn process_entry(
     if metadata.file_type().is_symlink() || !is_same_filesystem(target_folder, &new_path) {
         return (result, None);
     }
-    (result, Some(new_path))
+    // An ignored directory's own .nfcignore is not read (as in git).
+    (result, Some((new_path, skip_rename)))
 }
 
 /// Normalize filenames in a directory to the target normalization form.
@@ -251,12 +252,23 @@ pub fn normalize_directory(
     // On failure, read_dir below reports the error as before.
     let canonical_target =
         fs::canonicalize(target_folder).unwrap_or_else(|_| target_folder.to_path_buf());
-    let ignore = ignore.map(|scope| (scope, canonical_target.as_path()));
-
+    // Each queued directory carries the .nfcignore chain of its ancestors and
+    // whether to read its own file (not for ignored directories).
+    let start_chain = ignore.map(|scope| scope.chain_for(&canonical_target));
     let mut queue = VecDeque::new();
-    queue.push_back(target_folder.to_path_buf());
+    queue.push_back((target_folder.to_path_buf(), start_chain, true));
 
-    while let Some(current_dir) = queue.pop_front() {
+    while let Some((current_dir, chain, read_own)) = queue.pop_front() {
+        let chain = match (chain, current_dir.strip_prefix(target_folder)) {
+            // join("") would add a trailing slash.
+            (Some(c), Ok(rel)) if read_own && rel.as_os_str().is_empty() => {
+                Some(c.enter(&canonical_target))
+            }
+            (Some(c), Ok(rel)) if read_own => Some(c.enter(&canonical_target.join(rel))),
+            (c, _) => c,
+        };
+        let scope = ignore.zip(chain.as_ref());
+        let scope = scope.map(|(s, c)| (s, canonical_target.as_path(), c));
         let entries: Vec<_> = match fs::read_dir(&current_dir) {
             Ok(entries) => entries.filter_map(|entry| entry.ok()).collect(),
             Err(e) => {
@@ -270,7 +282,7 @@ pub fn normalize_directory(
 
         let results: Vec<_> = entries
             .par_iter()
-            .map(|entry| process_entry(entry, target, target_folder, recursive, ignore))
+            .map(|entry| process_entry(entry, target, target_folder, recursive, scope))
             .collect();
 
         for (result, subdir) in results {
@@ -279,8 +291,8 @@ pub fn normalize_directory(
                 Ok(None) => {}
                 Err(e) => errors.push(e),
             }
-            if recursive && let Some(d) = subdir {
-                queue.push_back(d);
+            if recursive && let Some((d, ignored)) = subdir {
+                queue.push_back((d, chain.clone(), !ignored));
             }
         }
     }
@@ -434,6 +446,52 @@ mod tests {
             names(&keep),
             vec!["가.txt".to_string()],
             "nested entry re-includes"
+        );
+    }
+
+    #[test]
+    fn test_normalize_directory_reads_nfcignore() {
+        use crate::config::{Config, PathEntry, PathMode};
+
+        // w/.nfcignore        *.tmp, /skip/
+        // w/sub/임시.tmp       ignored by the parent's .nfcignore, also when scanning sub/
+        // w/sub/변환.txt       converted
+        // w/skip/.nfcignore   !*  (not read: skip/ is ignored)
+        let temp = TempDir::new().unwrap();
+        let nfd = |s: &str| s.nfd().collect::<String>();
+        let w = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir_all(w.join("sub")).unwrap();
+        fs::create_dir_all(w.join("skip")).unwrap();
+        fs::write(w.join(".nfcignore"), "*.tmp\n/skip/\n").unwrap();
+        fs::write(w.join("skip/.nfcignore"), "!*\n").unwrap();
+        create_nfd_file(&w.join("sub"), "임시.tmp");
+        create_nfd_file(&w.join("sub"), "변환.txt");
+        create_nfd_file(&w.join("skip"), "안쪽.txt");
+
+        let mut config = Config {
+            paths: vec![PathEntry::new(w.clone(), PathMode::Recursive)],
+            global_ignore: vec![],
+        };
+        config.refresh_statuses();
+        let scope = config.ignore_scope_for(&w);
+
+        // Scanning only sub/ (as the watcher does for a moved-in folder).
+        normalize_directory(&w.join("sub"), true, NormalizationTarget::NFC, Some(&scope)).unwrap();
+        assert!(w.join("sub").join(nfd("임시.tmp")).exists());
+        assert!(
+            fs::read_dir(w.join("sub"))
+                .unwrap()
+                .any(|e| e.unwrap().file_name() == "변환.txt")
+        );
+
+        normalize_directory(&w, true, NormalizationTarget::NFC, Some(&scope)).unwrap();
+        let skip_names: Vec<_> = fs::read_dir(w.join("skip"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            skip_names.contains(&nfd("안쪽.txt")),
+            "ignored dir's .nfcignore is not read"
         );
     }
 }

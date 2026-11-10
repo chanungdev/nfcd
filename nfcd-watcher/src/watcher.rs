@@ -2,6 +2,7 @@ use crate::handler;
 use log::{debug, error, info, warn};
 use nfcd_core::config::{self, ActiveEntry, Config, IgnoreScope, PathMode, effective_entry};
 use nfcd_core::constants::{CONFIG_PATH, HEARTBEAT_INTERVAL, HEARTBEAT_PATH, PLIST_PATH};
+use nfcd_core::ignore::NFCIGNORE;
 use nfcd_core::normalizer::NormalizationTarget;
 use notify::event::{CreateKind, EventKind, ModifyKind};
 use notify::{Error as NotifyError, Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -52,7 +53,7 @@ fn route(event: &Event, path: &Path, entries: &[ActiveEntry]) -> Option<bool> {
     if !needs_conversion && !scan {
         return None;
     }
-    if entry.ignore.is_ignored(path, is_dir) {
+    if entry.is_ignored(path, is_dir) {
         return None;
     }
     Some(scan)
@@ -260,6 +261,7 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
         .and_then(|d| std::fs::canonicalize(d).ok())
         .map(|d| d.join(CONFIG_PATH.file_name().unwrap_or_default()));
     let mut config_changed = false;
+    let mut nfcignore_changed = false;
     spawn_heartbeat_task();
     spawn_binary_watchdog();
 
@@ -288,6 +290,10 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
                             config_changed = true;
                             continue;
                         }
+                        if path.file_name().is_some_and(|n| n == NFCIGNORE) {
+                            nfcignore_changed = true;
+                            continue;
+                        }
                         let Some(scan) = route(&event, path, &active.entries) else {
                             continue;
                         };
@@ -310,6 +316,12 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
                     pending.clear();
                 } else if std::mem::take(&mut rescan) {
                     warn!("File system events were dropped. Rescanning watch paths.");
+                    spawn_scans(&active.roots, &active.scope);
+                } else if std::mem::take(&mut nfcignore_changed) {
+                    // Removed patterns un-ignore files that were never converted.
+                    // ponytail: rescans every root, not just the file's directory.
+                    // .nfcignore edits are rare; scan only that subtree if this gets costly.
+                    info!("{} changed. Rescanning watch paths.", NFCIGNORE);
                     spawn_scans(&active.roots, &active.scope);
                 }
                 // ponytail: renaming a folder emits another event for its new name, so its

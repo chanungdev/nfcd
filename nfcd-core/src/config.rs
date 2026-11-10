@@ -1,9 +1,10 @@
 use crate::constants::CONFIG_PATH;
-use crate::ignore::{IgnoreRules, to_nfc};
+use crate::ignore::{IgnoreMatch, IgnoreRules, to_nfc};
 use crate::utils::expand_tilde;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thiserror::Error;
 
 // === TOML serde types (private) ===
@@ -145,7 +146,7 @@ pub struct ActiveEntry {
     pub canonical: PathBuf,
     pub mode: PathMode,
     /// Compiled global + entry patterns, rooted at `canonical`.
-    pub ignore: IgnoreRules,
+    ignore: IgnoreRules,
     /// NFC form of `canonical`. Matching in NFC keeps working after a parent
     /// directory is renamed NFD→NFC while the watcher is running.
     match_root: PathBuf,
@@ -158,6 +159,75 @@ impl ActiveEntry {
             PathMode::Children => nfc_path.parent() == Some(&*self.match_root),
         }
     }
+
+    /// Whether `path` is ignored by config patterns or `.nfcignore` files below the root.
+    pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        self.explain(path, is_dir).is_some_and(|m| m.ignored)
+    }
+
+    /// The pattern that decides `path`'s status, if any (reads `.nfcignore` files).
+    pub fn explain(&self, path: &Path, is_dir: bool) -> Option<IgnoreMatch> {
+        explain_walk(&self.match_root, &self.ignore, path, is_dir)
+    }
+}
+
+/// `.nfcignore` rules from a root down to the current directory, outermost first.
+#[derive(Debug, Clone, Default)]
+pub struct NfcIgnoreChain(Vec<Arc<IgnoreRules>>);
+
+impl NfcIgnoreChain {
+    /// This chain extended with `dir/.nfcignore`, if present.
+    pub fn enter(&self, dir: &Path) -> Self {
+        let mut next = self.clone();
+        if let Some(rules) = IgnoreRules::from_dir(dir) {
+            next.0.push(Arc::new(rules));
+        }
+        next
+    }
+}
+
+/// Deciding pattern for `path`: the deepest matching `.nfcignore` at or below
+/// `root` first (closest to the file wins), then `rules` (config patterns).
+fn decide(
+    root: &Path,
+    rules: &IgnoreRules,
+    chain: &NfcIgnoreChain,
+    path: &Path,
+    is_dir: bool,
+) -> Option<IgnoreMatch> {
+    chain
+        .0
+        .iter()
+        .rev()
+        .filter(|r| r.root().starts_with(root))
+        .find_map(|r| r.explain(path, is_dir))
+        .or_else(|| rules.explain(path, is_dir))
+}
+
+/// Walk from `root` down to `path`, checking each directory on the way: an
+/// ignored directory decides (and its `.nfcignore` is never read), as in git and
+/// as a directory scan sees it.
+fn explain_walk(
+    root: &Path,
+    rules: &IgnoreRules,
+    path: &Path,
+    is_dir: bool,
+) -> Option<IgnoreMatch> {
+    let path = to_nfc(path);
+    let names: Vec<_> = path.strip_prefix(root).ok()?.components().collect();
+    let mut dir = root.to_path_buf();
+    let mut chain = NfcIgnoreChain::default();
+    for (i, name) in names.iter().enumerate() {
+        chain = chain.enter(&dir);
+        let p = dir.join(name);
+        let last = i + 1 == names.len();
+        let m = decide(root, rules, &chain, &p, !last || is_dir);
+        if last || m.as_ref().is_some_and(|m| m.ignored) {
+            return m;
+        }
+        dir = p;
+    }
+    None
 }
 
 /// The most specific (longest root) active entry covering `path`.
@@ -188,11 +258,41 @@ impl IgnoreScope {
         }
     }
 
-    pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+    fn rules_for(&self, path: &Path) -> (&Path, &IgnoreRules) {
         match effective_entry(path, &self.entries) {
-            Some(e) => e.ignore.is_ignored(path, is_dir),
-            None => self.fallback.is_ignored(path, is_dir),
+            Some(e) => (&e.match_root, &e.ignore),
+            None => (self.fallback.root(), &self.fallback),
         }
+    }
+
+    /// Whether `path` is ignored, given the `.nfcignore` files of the directories
+    /// above it (`chain`, built by a scan via `chain_for` and `enter`).
+    pub fn is_ignored(&self, path: &Path, is_dir: bool, chain: &NfcIgnoreChain) -> bool {
+        let (root, rules) = self.rules_for(path);
+        decide(root, rules, chain, path, is_dir).is_some_and(|m| m.ignored)
+    }
+
+    /// `.nfcignore` chain for the directories above `dir`, starting at the
+    /// deepest entry root containing it. A scan then calls `enter(dir)`.
+    pub fn chain_for(&self, dir: &Path) -> NfcIgnoreChain {
+        let dir = to_nfc(dir);
+        let root = self
+            .entries
+            .iter()
+            .map(|e| e.match_root.as_path())
+            .filter(|r| dir.starts_with(r))
+            .max_by_key(|r| r.as_os_str().len())
+            .unwrap_or(self.fallback.root());
+        let mut chain = NfcIgnoreChain::default();
+        let Ok(rel) = dir.strip_prefix(root) else {
+            return chain;
+        };
+        let mut cur = root.to_path_buf();
+        for name in rel.components() {
+            chain = chain.enter(&cur);
+            cur.push(name);
+        }
+        chain
     }
 
     /// Whether an active entry lives strictly below `dir`. Such a directory is
@@ -687,5 +787,50 @@ mode = "children"
         let parsed: ConfigFile = toml::from_str(src).unwrap();
         assert!(parsed.global.ignore.is_empty());
         assert_eq!(toml::to_string_pretty(&parsed).unwrap(), src);
+    }
+
+    #[test]
+    fn nfcignore_precedence_and_ignored_dirs() {
+        use crate::ignore::PatternSource;
+        use unicode_normalization::UnicodeNormalization;
+
+        // root/.nfcignore      *.log, !keep.tmp   (beats config *.tmp)
+        // root/하위/.nfcignore  !*.log            (deeper beats shallower; dir name NFD on disk)
+        // root/build/.nfcignore !*                (never read: build/ is ignored)
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let sub_nfd = root.join("하위".nfd().collect::<String>());
+        fs::create_dir(&sub_nfd).unwrap();
+        fs::create_dir(root.join("build")).unwrap();
+        fs::write(root.join(".nfcignore"), "*.log\n!keep.tmp\n").unwrap();
+        fs::write(sub_nfd.join(".nfcignore"), "# comment\n!*.log\n").unwrap();
+        fs::write(root.join("build/.nfcignore"), "!*\n").unwrap();
+
+        let mut entry = PathEntry::new(root.clone(), PathMode::Recursive);
+        entry.ignore = vec!["*.tmp".into(), "/build/".into()];
+        let mut config = Config {
+            paths: vec![entry],
+            global_ignore: vec![],
+        };
+        config.refresh_statuses();
+        let entries = config.active_entries();
+        let e = &entries[0];
+
+        assert!(e.is_ignored(&root.join("a.tmp"), false));
+        assert!(!e.is_ignored(&root.join("keep.tmp"), false));
+        let m = e.explain(&root.join("x.log"), false).unwrap();
+        assert!(m.ignored);
+        assert_eq!(m.source, PatternSource::File(root.join(".nfcignore")));
+        assert!(!e.is_ignored(&root.join("하위/y.log"), false));
+        assert!(!e.is_ignored(&sub_nfd.join("y.log"), false));
+        assert!(e.is_ignored(&root.join("build/z.txt"), false));
+
+        // A scan uses the same rules via the chain.
+        let scope = IgnoreScope::new(entries.clone());
+        let chain = scope
+            .chain_for(&root.join("하위"))
+            .enter(&root.join("하위"));
+        assert!(!scope.is_ignored(&root.join("하위/y.log"), false, &chain));
+        assert!(scope.is_ignored(&root.join("하위/a.tmp"), false, &chain));
     }
 }

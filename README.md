@@ -66,6 +66,8 @@ Patterns support `*`, `**`, `!` negation, trailing `/` for directories, and lead
 
 A path nested inside another entry takes over its own subtree, using only the global patterns and its own. Use this to watch a directory that a parent entry ignores.
 
+A `.nfcignore` file in any watched directory adds patterns for that directory and below, like `.gitignore`. Its patterns take precedence over the config, and deeper files over shallower ones. Files inside an ignored directory are not read.
+
 Run `nfcd check-ignore <path>` to see whether a path is ignored and which pattern decides it.
 
 The watcher picks up config changes automatically. An invalid config is ignored and the previous one stays in effect.
