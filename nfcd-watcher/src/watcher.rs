@@ -1,9 +1,9 @@
 use crate::handler;
-use log::{debug, error, info};
-use nfcd_core::config::{ActiveEntry, PathMode, effective_entry};
+use log::{debug, error, info, warn};
+use nfcd_core::config::{ActiveEntry, IgnoreScope, PathMode, effective_entry};
 use nfcd_core::constants::{HEARTBEAT_INTERVAL, HEARTBEAT_PATH, PLIST_PATH};
 use nfcd_core::normalizer::NormalizationTarget;
-use notify::event::{CreateKind, EventKind};
+use notify::event::{CreateKind, EventKind, ModifyKind};
 use notify::{Error as NotifyError, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +28,45 @@ fn is_dir_event(event: &Event, path: &Path) -> bool {
     }
 }
 
-/// Register watch paths with the notify watcher. Returns (recursive_count, children_count).
+/// What to do with an event on `path`: None drops it, Some(scan) handles it, where
+/// `scan` means a directory in a recursive entry whose subtree is converted too.
+fn route(event: &Event, path: &Path, entries: &[ActiveEntry]) -> Option<bool> {
+    let file_name = path.file_name()?.to_str()?;
+    let needs_conversion = NormalizationTarget::NFC.needs_conversion(file_name);
+    // An NFC-named folder can still hold NFD names (moved in as a single event),
+    // so creates and renames are kept until we know whether they are directories.
+    let may_be_dir = match event.kind {
+        EventKind::Create(CreateKind::File) => false,
+        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_)) => true,
+        _ => false,
+    };
+    // Early filter: skip NFC files before any path matching
+    // (effective_entry allocates an NFC copy of the path).
+    if !needs_conversion && !may_be_dir {
+        return None;
+    }
+    // Use the most specific entry to determine if this event should be processed.
+    let entry = effective_entry(path, entries)?;
+    let is_dir = is_dir_event(event, path);
+    let scan = is_dir && entry.mode == PathMode::Recursive;
+    if !needs_conversion && !scan {
+        return None;
+    }
+    if entry.ignore.is_ignored(path, is_dir) {
+        return None;
+    }
+    Some(scan)
+}
+
+/// Scan registered roots in the background (startup and dropped-event recovery).
+fn spawn_scans(roots: &[(PathBuf, bool)], scope: &Arc<IgnoreScope>) {
+    for (root, recursive) in roots {
+        spawn(handler::scan_dir(root.clone(), *recursive, scope.clone()));
+    }
+}
+
+/// Register watch paths with the notify watcher. Returns (recursive_count, children_count,
+/// registered roots as (path, recursive)).
 ///
 /// Entries nested under another recursive entry are not registered: the parent's
 /// stream already delivers their events, and effective_entry() routes each event
@@ -36,7 +74,8 @@ fn is_dir_event(event: &Event, path: &Path) -> bool {
 fn register_watch_paths(
     watcher: &mut RecommendedWatcher,
     entries: &[ActiveEntry],
-) -> (usize, usize) {
+) -> (usize, usize, Vec<(PathBuf, bool)>) {
+    let mut roots = Vec::new();
     let mut recursive_count = 0usize;
     let mut children_count = 0usize;
 
@@ -62,7 +101,10 @@ fn register_watch_paths(
             PathMode::Children => RecursiveMode::NonRecursive,
         };
         match watcher.watch(&entry.canonical, notify_mode) {
-            Ok(()) => debug!("Watching path: {}", entry.canonical.display()),
+            Ok(()) => {
+                debug!("Watching path: {}", entry.canonical.display());
+                roots.push((entry.canonical.clone(), entry.mode == PathMode::Recursive));
+            }
             Err(e) => error!(
                 "Failed to watch path: {} - {}",
                 entry.canonical.display(),
@@ -71,7 +113,7 @@ fn register_watch_paths(
         }
     }
 
-    (recursive_count, children_count)
+    (recursive_count, children_count, roots)
 }
 
 /// Log a summary of the registered watch paths.
@@ -157,8 +199,11 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
         }
     };
 
-    let (recursive_count, children_count) = register_watch_paths(&mut watcher, &entries);
+    let (recursive_count, children_count, roots) = register_watch_paths(&mut watcher, &entries);
     log_watch_summary(recursive_count, children_count);
+    let scope = Arc::new(IgnoreScope::new(entries.clone()));
+    // Catch names created while the watcher was not running.
+    spawn_scans(&roots, &scope);
     spawn_heartbeat_task();
     spawn_binary_watchdog();
 
@@ -166,52 +211,98 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
 
     // Process events with debouncing to deduplicate rapid events on the same path.
-    let mut pending: HashMap<PathBuf, Event> = HashMap::new();
+    // Path -> whether to scan its subtree.
+    let mut pending: HashMap<PathBuf, bool> = HashMap::new();
+    let mut rescan = false;
     let mut debounce_timer = tokio::time::interval(DEBOUNCE_DURATION);
 
     loop {
         tokio::select! {
             Some(res) = rx.recv() => {
                 match res {
+                    // FSEvents dropped events (MustScanSubDirs / KernelDropped / UserDropped).
+                    // ponytail: rescans every root, not just the reported path. Drops are rare;
+                    // narrow it if large trees make this costly.
+                    Ok(event) if event.need_rescan() => rescan = true,
                     Ok(event) => {
-                        let event_path = match event.paths.first() {
-                            Some(path) => path,
-                            None => continue,
-                        };
-
-                        let file_name = match event_path.file_name().and_then(|s| s.to_str()) {
-                            Some(name) => name,
-                            None => continue,
-                        };
-                        // Early filter: skip files already in NFC before any path matching
-                        // (effective_entry allocates an NFC copy of the path).
-                        if !NormalizationTarget::NFC.needs_conversion(file_name) {
-                            continue;
-                        }
-                        // Use the most specific entry to determine if this event should be processed.
-                        let Some(entry) = effective_entry(event_path, &entries) else {
+                        let Some(path) = event.paths.first() else {
                             continue;
                         };
-                        // Pattern check only for names that need conversion (may lstat).
-                        if entry.ignore.is_ignored(event_path, is_dir_event(&event, event_path)) {
+                        let Some(scan) = route(&event, path, &entries) else {
                             continue;
-                        }
-
-                        // Same path overwrites previous event (deduplication).
-                        pending.insert(event_path.clone(), event);
+                        };
+                        // Same path within the window is handled once.
+                        *pending.entry(path.clone()).or_default() |= scan;
                     }
                     Err(e) => error!("FS watcher error: {}", e),
                 }
             }
             _ = debounce_timer.tick() => {
-                for (_path, event) in pending.drain() {
+                if std::mem::take(&mut rescan) {
+                    warn!("File system events were dropped. Rescanning watch paths.");
+                    spawn_scans(&roots, &scope);
+                }
+                // ponytail: renaming a folder emits another event for its new name, so its
+                // subtree is scanned twice (the second pass only reads). Track recent scans
+                // if this shows up as load.
+                for (path, scan) in pending.drain() {
                     let sem_clone = semaphore.clone();
+                    let scope = scan.then(|| scope.clone());
                     spawn(async move {
                         let _permit = sem_clone.acquire_owned().await.unwrap();
-                        handler::handle_event(event).await;
+                        handler::handle_event(path, scope).await;
                     });
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nfcd_core::config::{Config, PathEntry};
+    use notify::event::RenameMode;
+
+    fn entries(root: &Path, mode: PathMode, ignore: &[&str]) -> Vec<ActiveEntry> {
+        let mut entry = PathEntry::new(root.to_path_buf(), mode);
+        entry.ignore = ignore.iter().map(|s| s.to_string()).collect();
+        let mut config = Config {
+            paths: vec![entry],
+            global_ignore: vec![],
+        };
+        config.refresh_statuses();
+        config.active_entries()
+    }
+
+    fn rename(path: &Path) -> Event {
+        Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any))).add_path(path.into())
+    }
+
+    #[test]
+    fn route_scans_nfc_folder_in_recursive_entry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let dir = root.join("moved");
+        let skip = root.join("skip");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&skip).unwrap();
+        std::fs::write(root.join("a.txt"), "").unwrap();
+        let rec = entries(&root, PathMode::Recursive, &["/skip/"]);
+
+        // NFC folder moved in: handled with a subtree scan.
+        assert_eq!(route(&rename(&dir), &dir, &rec), Some(true));
+        // NFC file rename and ignored folder: dropped.
+        let file = root.join("a.txt");
+        assert_eq!(route(&rename(&file), &file, &rec), None);
+        assert_eq!(route(&rename(&skip), &skip, &rec), None);
+        // NFD file: converted, no scan.
+        let nfd = root.join("\u{1100}\u{1161}.txt");
+        let create = Event::new(EventKind::Create(CreateKind::File)).add_path(nfd.clone());
+        assert_eq!(route(&create, &nfd, &rec), Some(false));
+
+        // Children mode never scans subtrees.
+        let children = entries(&root, PathMode::Children, &[]);
+        assert_eq!(route(&rename(&dir), &dir, &children), None);
     }
 }

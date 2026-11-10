@@ -10,3 +10,6 @@ nfcd-core = { path = "../nfcd-core" }
 notify = { workspace = true }
 once_cell = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

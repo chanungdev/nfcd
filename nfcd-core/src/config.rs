@@ -179,6 +179,15 @@ pub struct IgnoreScope {
 }
 
 impl IgnoreScope {
+    /// Scope for paths inside the given entries (the watcher). Paths outside
+    /// every entry are never ignored.
+    pub fn new(entries: Vec<ActiveEntry>) -> Self {
+        Self {
+            entries,
+            fallback: IgnoreRules::new(Path::new("/"), &[], &[]),
+        }
+    }
+
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
         match effective_entry(path, &self.entries) {
             Some(e) => e.ignore.is_ignored(path, is_dir),

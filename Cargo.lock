@@ -1288,6 +1288,7 @@ dependencies = [
  "nfcd-core",
  "notify",
  "once_cell",
+ "tempfile",
  "tokio",
 ]
 
