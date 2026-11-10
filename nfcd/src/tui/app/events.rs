@@ -244,15 +244,9 @@ pub fn process_action(app: &mut App, action: Action) {
                 daemon_controller::try_restart_watcher,
             );
         }
+        // The watcher reloads config.toml by itself.
         Action::ConfigSaved => {
             app.show_toast("Config saved".to_string(), false);
-            if app.watcher_running {
-                spawn_watcher_op(
-                    app,
-                    PendingWatcherOperation::Restarting,
-                    daemon_controller::try_restart_watcher,
-                );
-            }
         }
         Action::ReloadConfig => {
             app.config.reload();
