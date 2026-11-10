@@ -3,7 +3,7 @@ members = ["nfcd", "nfcd-core", "nfcd-watcher"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1-dev"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
