@@ -29,7 +29,6 @@ async fn main() {
     if let Some(e) = &config_error {
         warn!("Config load issue: {}", e);
     }
-    let active = config.active_entries();
 
     // Initialize heartbeat: create directory and initial file
     if let Some(parent) = HEARTBEAT_PATH.parent()
@@ -43,7 +42,7 @@ async fn main() {
     debug!("Heartbeat file initialized: {}", HEARTBEAT_PATH.display());
 
     let rt_handle = tokio::runtime::Handle::current();
-    watcher::start_watcher(rt_handle, active).await;
+    watcher::start_watcher(rt_handle, config).await;
 }
 
 /// Check Full Disk Access by attempting to access FDA-protected paths.

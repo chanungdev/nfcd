@@ -50,7 +50,7 @@ The Config tab manages which directories the watcher monitors. Each path entry h
 
 ### Ignore patterns
 
-Exclude files and directories with gitignore-style patterns in `~/.config/nfcd/config.toml` (the TUI can't edit patterns yet):
+Exclude files and directories with gitignore-style patterns in `~/.config/nfcd/config.toml`, or in the Config tab with `i` (the `G` row holds global patterns):
 
 ```toml
 [global]                        # applied to every path
@@ -68,7 +68,7 @@ A path nested inside another entry takes over its own subtree, using only the gl
 
 Run `nfcd check-ignore <path>` to see whether a path is ignored and which pattern decides it.
 
-Restart the watcher after editing the config.
+The watcher picks up config changes automatically. An invalid config is ignored and the previous one stays in effect.
 
 ## Logs
 

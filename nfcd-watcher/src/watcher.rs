@@ -1,7 +1,7 @@
 use crate::handler;
 use log::{debug, error, info, warn};
-use nfcd_core::config::{ActiveEntry, IgnoreScope, PathMode, effective_entry};
-use nfcd_core::constants::{HEARTBEAT_INTERVAL, HEARTBEAT_PATH, PLIST_PATH};
+use nfcd_core::config::{self, ActiveEntry, Config, IgnoreScope, PathMode, effective_entry};
+use nfcd_core::constants::{CONFIG_PATH, HEARTBEAT_INTERVAL, HEARTBEAT_PATH, PLIST_PATH};
 use nfcd_core::normalizer::NormalizationTarget;
 use notify::event::{CreateKind, EventKind, ModifyKind};
 use notify::{Error as NotifyError, Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -116,21 +116,61 @@ fn register_watch_paths(
     (recursive_count, children_count, roots)
 }
 
-/// Log a summary of the registered watch paths.
-fn log_watch_summary(recursive_count: usize, children_count: usize) {
+/// Log a summary of the registered watch paths. `event` is e.g. "started".
+fn log_watch_summary(event: &str, recursive_count: usize, children_count: usize) {
     if recursive_count == 0 && children_count == 0 {
         info!(
-            "nfcd-watcher v{} started. No paths configured.",
-            env!("CARGO_PKG_VERSION")
+            "nfcd-watcher v{} {}. No paths configured.",
+            env!("CARGO_PKG_VERSION"),
+            event
         );
     } else {
         info!(
-            "nfcd-watcher v{} started. Paths: {} recursive, {} children.",
+            "nfcd-watcher v{} {}. Paths: {} recursive, {} children.",
             env!("CARGO_PKG_VERSION"),
+            event,
             recursive_count,
             children_count
         );
     }
+}
+
+/// Watch state derived from one config load.
+struct Active {
+    entries: Vec<ActiveEntry>,
+    scope: Arc<IgnoreScope>,
+    roots: Vec<(PathBuf, bool)>,
+}
+
+/// Register `config`'s paths and scan them (catches names created while they were
+/// not watched, and paths newly un-ignored by a config change).
+fn activate(watcher: &mut RecommendedWatcher, config: &Config, event: &str) -> Active {
+    let entries = config.active_entries();
+    let (recursive_count, children_count, roots) = register_watch_paths(watcher, &entries);
+    log_watch_summary(event, recursive_count, children_count);
+    let scope = Arc::new(IgnoreScope::new(entries.clone()));
+    spawn_scans(&roots, &scope);
+    Active {
+        entries,
+        scope,
+        roots,
+    }
+}
+
+/// Re-read config.toml. Returns None (keep the current config) when the file is
+/// unchanged, missing (mid-save by some editors), or invalid.
+fn reload_config(last_content: &mut String) -> Option<Config> {
+    let content = std::fs::read_to_string(&*CONFIG_PATH).ok()?;
+    if content == *last_content {
+        return None;
+    }
+    let (config, err) = config::load_config();
+    if let Some(e) = err {
+        warn!("Config not reloaded, keeping the current one: {}", e);
+        return None;
+    }
+    *last_content = content;
+    Some(config)
 }
 
 /// Spawn a background task that writes to the heartbeat file at a regular interval.
@@ -171,7 +211,7 @@ fn spawn_binary_watchdog() {
     });
 }
 
-pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<ActiveEntry>) {
+pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
     let mut watcher = match RecommendedWatcher::new(
@@ -199,11 +239,27 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
         }
     };
 
-    let (recursive_count, children_count, roots) = register_watch_paths(&mut watcher, &entries);
-    log_watch_summary(recursive_count, children_count);
-    let scope = Arc::new(IgnoreScope::new(entries.clone()));
-    // Catch names created while the watcher was not running.
-    spawn_scans(&roots, &scope);
+    let mut active = activate(&mut watcher, &config, "started");
+
+    // Watch the config directory (not the file: editors often save by renaming
+    // a temp file over it) and reload on change.
+    let mut last_content = std::fs::read_to_string(&*CONFIG_PATH).unwrap_or_default();
+    let config_dir = CONFIG_PATH.parent().map(Path::to_path_buf);
+    if let Some(dir) = &config_dir {
+        let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
+            error!(
+                "Failed to watch config directory: {} - {}",
+                dir.display(),
+                e
+            );
+        }
+    }
+    // FSEvents reports canonical paths; HOME may go through a symlink.
+    let config_file = config_dir
+        .and_then(|d| std::fs::canonicalize(d).ok())
+        .map(|d| d.join(CONFIG_PATH.file_name().unwrap_or_default()));
+    let mut config_changed = false;
     spawn_heartbeat_task();
     spawn_binary_watchdog();
 
@@ -228,7 +284,11 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
                         let Some(path) = event.paths.first() else {
                             continue;
                         };
-                        let Some(scan) = route(&event, path, &entries) else {
+                        if config_file.as_ref() == Some(path) {
+                            config_changed = true;
+                            continue;
+                        }
+                        let Some(scan) = route(&event, path, &active.entries) else {
                             continue;
                         };
                         // Same path within the window is handled once.
@@ -238,16 +298,26 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
                 }
             }
             _ = debounce_timer.tick() => {
-                if std::mem::take(&mut rescan) {
+                if std::mem::take(&mut config_changed)
+                    && let Some(config) = reload_config(&mut last_content)
+                {
+                    for (root, _) in &active.roots {
+                        let _ = watcher.unwatch(root);
+                    }
+                    // ponytail: rescans every root after a reload, not just what changed.
+                    // Config edits are rare; diff old/new entries if this gets costly.
+                    active = activate(&mut watcher, &config, "reloaded config");
+                    pending.clear();
+                } else if std::mem::take(&mut rescan) {
                     warn!("File system events were dropped. Rescanning watch paths.");
-                    spawn_scans(&roots, &scope);
+                    spawn_scans(&active.roots, &active.scope);
                 }
                 // ponytail: renaming a folder emits another event for its new name, so its
                 // subtree is scanned twice (the second pass only reads). Track recent scans
                 // if this shows up as load.
                 for (path, scan) in pending.drain() {
                     let sem_clone = semaphore.clone();
-                    let scope = scan.then(|| scope.clone());
+                    let scope = scan.then(|| active.scope.clone());
                     spawn(async move {
                         let _permit = sem_clone.acquire_owned().await.unwrap();
                         handler::handle_event(path, scope).await;

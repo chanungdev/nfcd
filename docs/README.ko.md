@@ -50,7 +50,7 @@ Config 탭에서 감시할 디렉토리를 관리합니다. 각 경로의 모드
 
 ### Ignore 패턴
 
-`~/.config/nfcd/config.toml`에 gitignore 형식의 패턴으로 제외할 파일과 폴더를 지정합니다 (아직 TUI에서는 패턴을 편집할 수 없습니다):
+`~/.config/nfcd/config.toml`에 gitignore 형식의 패턴으로 제외할 파일과 폴더를 지정합니다. Config 탭에서 `i`로 편집할 수도 있습니다 (`G` 행이 global 패턴):
 
 ```toml
 [global]                        # 모든 경로에 적용
@@ -68,7 +68,7 @@ ignore = ["*.crdownload", "/torrents/*", "!/torrents/keep/"]
 
 `nfcd check-ignore <path>`로 경로가 ignore되는지, 어느 패턴 때문인지 확인할 수 있습니다.
 
-설정을 바꾼 뒤에는 watcher를 재시작해야 합니다.
+watcher는 설정 변경을 자동으로 반영합니다. 잘못된 설정은 무시하고 이전 설정을 유지합니다.
 
 ## Logs
 
