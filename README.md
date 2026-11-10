@@ -30,7 +30,7 @@ macOS stores filenames in NFD, while Windows and Linux use NFC. This mismatch ca
 ## Features
 
 - **Real-time monitoring** — Converts NFD filenames to NFC as soon as they appear
-- **Flexible watch paths** — Mix `watch`/`ignore` actions with `recursive`/`children` modes to control exactly which directories are monitored
+- **Flexible watch paths** — `recursive`/`children` modes plus gitignore-style ignore patterns control exactly what is converted
 - **Manual conversion** — Convert filenames between NFD and NFC, individually or recursively
 - **Log viewer** — Review past watcher logs or follow new entries live
 - **Intuitive TUI** — Every keybinding is shown on screen, with full mouse support
@@ -46,7 +46,27 @@ The Home tab displays the current watcher service status and provides controls t
 
 <img src="https://github.com/elgar328/nfd2nfc/releases/download/assets/config.png" alt="Config" width="750" />
 
-The Config tab manages which directories the watcher monitors. Each path entry has an action (`watch` or `ignore`), mode (`recursive` or `children`), and validation status.
+The Config tab manages which directories the watcher monitors. Each path entry has a mode (`recursive` or `children`), its ignore pattern count, and validation status.
+
+### Ignore patterns
+
+Exclude files and directories with gitignore-style patterns in `~/.config/nfcd/config.toml` (the TUI can't edit patterns yet):
+
+```toml
+[global]                        # applied to every path
+ignore = [".git/", "node_modules/", "*.app/"]
+
+[[paths]]
+path = "~/Downloads"
+mode = "recursive"
+ignore = ["*.crdownload", "/torrents/*", "!/torrents/keep/"]
+```
+
+Patterns support `*`, `**`, `!` negation, trailing `/` for directories, and leading `/` to anchor at the entry's path. Korean (or any NFD/NFC) names match regardless of normalization form.
+
+A path nested inside another entry takes over its own subtree, using only the global patterns and its own. Use this to watch a directory that a parent entry ignores.
+
+Restart the watcher after editing the config.
 
 ## Logs
 
@@ -68,7 +88,7 @@ Running `nfcd` without arguments launches the TUI. Add a command to use CLI mode
 nfcd status [--json]
 nfcd watcher start|stop|restart
 nfcd config list [--json]
-nfcd config add <path> [--action watch|ignore] [--mode recursive|children] [--dry-run] [--json]
+nfcd config add <path> [--mode recursive|children] [--dry-run] [--json]
 nfcd config remove <index> [--dry-run] [--json]
 nfcd config sort
 nfcd convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
@@ -86,7 +106,7 @@ Binary:           ~/.cargo/bin/nfcd
 Watcher binary:   ~/.cargo/bin/nfcd-watcher
 Config:           ~/.config/nfcd/config.toml
 Plist:            ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
-Registered paths: 6 total (4 active, 1 overridden, 1 not found)
+Registered paths: 6 total (4 active, 1 redundant, 1 not found)
 Full Disk Access: granted
 Update:           up to date
 ```

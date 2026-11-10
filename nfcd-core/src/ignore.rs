@@ -16,7 +16,7 @@ pub struct IgnoreRules {
     matcher: Gitignore,
 }
 
-fn to_nfc(path: &Path) -> PathBuf {
+pub(crate) fn to_nfc(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().nfc().collect::<String>())
 }
 

@@ -1,11 +1,10 @@
 use crate::tui::dir_browser::DirBrowser;
-use nfcd_core::config::{PathAction, PathMode};
+use nfcd_core::config::PathMode;
 
 #[derive(Debug)]
 pub struct AddModalState {
     pub show: bool,
     pub browser: DirBrowser,
-    pub action: PathAction,
     pub mode: PathMode,
     pub path_box_height: u16,
 }
@@ -15,7 +14,6 @@ impl AddModalState {
         Self {
             show: false,
             browser: DirBrowser::new(),
-            action: PathAction::Watch,
             mode: PathMode::Recursive,
             path_box_height: 3,
         }

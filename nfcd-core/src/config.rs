@@ -1,5 +1,5 @@
 use crate::constants::CONFIG_PATH;
-use crate::ignore::IgnoreRules;
+use crate::ignore::{IgnoreRules, to_nfc};
 use crate::utils::expand_tilde;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -30,39 +30,18 @@ impl GlobalSection {
     }
 }
 
+// deny_unknown_fields: a leftover nfd2nfc `action = "ignore"` line must fail
+// loudly instead of silently turning an ignored path into a watched one.
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigFileEntry {
     path: String,
-    action: PathAction,
     mode: PathMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ignore: Vec<String>,
 }
 
 // === Public types ===
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PathAction {
-    Watch,
-    Ignore,
-}
-
-impl PathAction {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PathAction::Watch => "Watch",
-            PathAction::Ignore => "Ignore",
-        }
-    }
-
-    pub fn toggle(&self) -> Self {
-        match self {
-            PathAction::Watch => PathAction::Ignore,
-            PathAction::Ignore => PathAction::Watch,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -94,7 +73,6 @@ pub enum PathStatus {
     NotADirectory,
     PermissionDenied,
     Redundant(usize),
-    Overridden(usize),
 }
 
 impl PathStatus {
@@ -105,7 +83,6 @@ impl PathStatus {
             PathStatus::NotADirectory => "Not a Dir",
             PathStatus::PermissionDenied => "No Access",
             PathStatus::Redundant(_) => "Redundant",
-            PathStatus::Overridden(_) => "Overridden",
         }
     }
 
@@ -113,7 +90,6 @@ impl PathStatus {
         match self {
             PathStatus::Active => "✓",
             PathStatus::Redundant(_) => "~",
-            PathStatus::Overridden(_) => "!",
             PathStatus::NotFound | PathStatus::NotADirectory | PathStatus::PermissionDenied => "✗",
         }
     }
@@ -122,27 +98,23 @@ impl PathStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct PathEntry {
     pub raw: String,
-    pub action: PathAction,
     pub mode: PathMode,
     pub canonical: Option<PathBuf>,
     pub status: PathStatus,
-    pub overrides: Option<usize>,
     /// gitignore-style patterns relative to this entry's path.
     pub ignore: Vec<String>,
 }
 
 impl PathEntry {
     /// Create a new PathEntry from a PathBuf, running validate_path automatically.
-    pub fn new(path: PathBuf, action: PathAction, mode: PathMode) -> Self {
+    pub fn new(path: PathBuf, mode: PathMode) -> Self {
         let raw = path.to_string_lossy().to_string();
         let (canonical, status) = validate_path(&raw);
         Self {
             raw,
-            action,
             mode,
             canonical,
             status,
-            overrides: None,
             ignore: Vec::new(),
         }
     }
@@ -151,11 +123,9 @@ impl PathEntry {
         let (canonical, status) = validate_path(&cfe.path);
         Self {
             raw: cfe.path,
-            action: cfe.action,
             mode: cfe.mode,
             canonical,
             status,
-            overrides: None,
             ignore: cfe.ignore,
         }
     }
@@ -163,7 +133,6 @@ impl PathEntry {
     fn to_config_entry(&self) -> ConfigFileEntry {
         ConfigFileEntry {
             path: self.raw.clone(),
-            action: self.action,
             mode: self.mode,
             ignore: self.ignore.clone(),
         }
@@ -174,10 +143,57 @@ impl PathEntry {
 #[derive(Debug, Clone)]
 pub struct ActiveEntry {
     pub canonical: PathBuf,
-    pub action: PathAction,
     pub mode: PathMode,
     /// Compiled global + entry patterns, rooted at `canonical`.
     pub ignore: IgnoreRules,
+    /// NFC form of `canonical`. Matching in NFC keeps working after a parent
+    /// directory is renamed NFD→NFC while the watcher is running.
+    match_root: PathBuf,
+}
+
+impl ActiveEntry {
+    fn covers(&self, nfc_path: &Path) -> bool {
+        match self.mode {
+            PathMode::Recursive => nfc_path.starts_with(&self.match_root),
+            PathMode::Children => nfc_path.parent() == Some(&*self.match_root),
+        }
+    }
+}
+
+/// The most specific (longest root) active entry covering `path`.
+/// Shared by the watcher and manual conversion so both route paths the same way.
+pub fn effective_entry<'a>(path: &Path, entries: &'a [ActiveEntry]) -> Option<&'a ActiveEntry> {
+    let path = to_nfc(path);
+    entries
+        .iter()
+        .filter(|e| e.covers(&path))
+        .max_by_key(|e| e.match_root.as_os_str().len())
+}
+
+/// Ignore rules for a manual conversion: each path uses the rules of its
+/// effective entry (as in the watcher), or global patterns if no entry covers it.
+#[derive(Debug, Clone)]
+pub struct IgnoreScope {
+    entries: Vec<ActiveEntry>,
+    fallback: IgnoreRules,
+}
+
+impl IgnoreScope {
+    pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        match effective_entry(path, &self.entries) {
+            Some(e) => e.ignore.is_ignored(path, is_dir),
+            None => self.fallback.is_ignored(path, is_dir),
+        }
+    }
+
+    /// Whether an active entry lives strictly below `dir`. Such a directory is
+    /// still descended into when ignored, since the nested entry re-includes it.
+    pub fn has_entry_below(&self, dir: &Path) -> bool {
+        let dir = to_nfc(dir);
+        self.entries
+            .iter()
+            .any(|e| e.match_root != dir && e.match_root.starts_with(&dir))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -290,20 +306,15 @@ fn find_fallback_parent(
 
 /// Compute redundancy statuses for all entries.
 ///
-/// Phase 1 — Resolve exact-path duplicates (same canonical path):
-///   For each group sharing a canonical path, determine a single winner:
-///   - Winning action = action of the first entry (lowest index)
-///   - Among entries with the winning action: prefer Recursive over Children, then lowest index
-///   - Winner = Active; same-action others = Redundant(winner); different-action = Overridden(winner)
+/// Phase 1 — Exact duplicates (same canonical path): one winner per path,
+///   Recursive preferred, then lowest index. Others = Redundant(winner).
 ///
-/// Phase 2 — Resolve parent-child relationships:
-///   Processing order: by canonical path length (shortest first), same length by index.
-///   For each Active entry E:
-///   - Find fallback F: most specific Active Recursive entry that is a prefix of E
-///   - F.action == E.action → Redundant(F)
-///   - F.action != E.action → Active (override of F)
-///   - No F → Active
-pub(crate) fn compute_statuses(entries: &mut [PathEntry]) {
+/// Phase 2 — Nested entries, processed shortest path first:
+///   For each Active entry E, find the most specific Active Recursive parent P.
+///   E is Redundant(P) when P would handle E's subtree identically, i.e. E has
+///   no patterns of its own and P's rules don't ignore E's path. Otherwise E
+///   stays Active and takes over its subtree (global + its own patterns only).
+pub(crate) fn compute_statuses(entries: &mut [PathEntry], global_ignore: &[String]) {
     let mut statuses: Vec<PathStatus> = entries
         .iter()
         .map(|e| {
@@ -314,85 +325,59 @@ pub(crate) fn compute_statuses(entries: &mut [PathEntry]) {
             }
         })
         .collect();
-    let mut overrides: Vec<Option<usize>> = vec![None; entries.len()];
 
     // Phase 1: Resolve exact-path duplicates
     for i in 0..entries.len() {
         if !matches!(statuses[i], PathStatus::Active) {
             continue;
         }
-        let Some(ref canonical_i) = entries[i].canonical else {
+        let Some(canonical_i) = entries[i].canonical.as_ref() else {
             continue;
         };
-
-        // Collect group: all Active entries with the same canonical path
         let group: Vec<usize> = (i..entries.len())
             .filter(|&j| {
                 matches!(statuses[j], PathStatus::Active)
-                    && entries[j]
-                        .canonical
-                        .as_ref()
-                        .is_some_and(|c| c == canonical_i)
+                    && entries[j].canonical.as_ref() == Some(canonical_i)
             })
             .collect();
-
         if group.len() < 2 {
             continue;
         }
-
-        // Winning action = first entry's action (lowest index in group)
-        let winning_action = entries[group[0]].action;
-
-        // Among entries with the winning action: prefer Recursive, then lowest index
         let winner = *group
             .iter()
-            .filter(|&&j| entries[j].action == winning_action)
-            .min_by_key(|&&j| {
-                let mode_priority = match entries[j].mode {
-                    PathMode::Recursive => 0u8,
-                    PathMode::Children => 1u8,
-                };
-                (mode_priority, j)
-            })
-            .unwrap(); // at least group[0] has winning_action
-
-        // Classify all non-winners
+            .min_by_key(|&&j| (entries[j].mode != PathMode::Recursive, j))
+            .unwrap(); // group is non-empty
         for &j in &group {
-            if j == winner {
-                continue;
-            }
-            if entries[j].action != winning_action {
-                statuses[j] = PathStatus::Overridden(winner);
-            } else {
+            if j != winner {
                 statuses[j] = PathStatus::Redundant(winner);
             }
         }
     }
 
-    // Phase 2: Resolve parent-child relationships
-    let order = build_processing_order(entries);
-    for &idx in &order {
+    // Phase 2: Resolve nested entries
+    for idx in build_processing_order(entries) {
         if !matches!(statuses[idx], PathStatus::Active) {
             continue;
         }
         let Some(canonical) = entries[idx].canonical.as_ref() else {
             continue;
         };
-
-        if let Some(f_idx) = find_fallback_parent(entries, &statuses, idx, canonical) {
-            if entries[f_idx].action == entries[idx].action {
-                statuses[idx] = PathStatus::Redundant(f_idx);
-            } else {
-                statuses[idx] = PathStatus::Active;
-                overrides[idx] = Some(f_idx);
-            }
+        let Some(p) = find_fallback_parent(entries, &statuses, idx, canonical) else {
+            continue;
+        };
+        let parent = &entries[p];
+        let Some(parent_root) = parent.canonical.as_ref() else {
+            continue;
+        };
+        let ignored_by_parent = IgnoreRules::new(parent_root, global_ignore, &parent.ignore)
+            .is_ignored(canonical, true);
+        if entries[idx].ignore.is_empty() && !ignored_by_parent {
+            statuses[idx] = PathStatus::Redundant(p);
         }
     }
 
-    // Apply computed statuses and overrides
-    for i in 0..entries.len() {
-        entries[i].status = statuses[i];
-        entries[i].overrides = overrides[i];
+    for (entry, status) in entries.iter_mut().zip(statuses) {
+        entry.status = status;
     }
 }
 
@@ -423,12 +408,13 @@ pub fn load_config() -> (Config, Option<ConfigError>) {
         .map(PathEntry::from_config_entry)
         .collect();
 
-    compute_statuses(&mut entries);
+    let global_ignore = config_file.global.ignore;
+    compute_statuses(&mut entries, &global_ignore);
 
     (
         Config {
             paths: entries,
-            global_ignore: config_file.global.ignore,
+            global_ignore,
         },
         None,
     )
@@ -441,9 +427,8 @@ impl Config {
             let (canonical, status) = validate_path(&entry.raw);
             entry.canonical = canonical;
             entry.status = status;
-            entry.overrides = None;
         }
-        compute_statuses(&mut self.paths);
+        compute_statuses(&mut self.paths, &self.global_ignore);
     }
 
     /// Extract active entries for watcher event filtering.
@@ -456,26 +441,22 @@ impl Config {
                 }
                 e.canonical.as_ref().map(|c| ActiveEntry {
                     canonical: c.clone(),
-                    action: e.action,
                     mode: e.mode,
                     ignore: IgnoreRules::new(c, &self.global_ignore, &e.ignore),
+                    match_root: to_nfc(c),
                 })
             })
             .collect()
     }
 
-    /// Ignore rules for a manual conversion of `path`: the rules of the most
-    /// specific active Watch entry covering it, or global patterns rooted at `path`.
-    pub fn ignore_rules_for(&self, path: &Path) -> IgnoreRules {
-        let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        self.paths
-            .iter()
-            .filter(|e| matches!(e.status, PathStatus::Active) && e.action == PathAction::Watch)
-            .filter_map(|e| e.canonical.as_ref().map(|c| (e, c)))
-            .filter(|(_, c)| path.starts_with(c))
-            .max_by_key(|(_, c)| c.as_os_str().len())
-            .map(|(e, c)| IgnoreRules::new(c, &self.global_ignore, &e.ignore))
-            .unwrap_or_else(|| IgnoreRules::new(&path, &self.global_ignore, &[]))
+    /// Ignore scope for a manual conversion of `target`. Paths not covered by
+    /// any entry fall back to global patterns rooted at `target`.
+    pub fn ignore_scope_for(&self, target: &Path) -> IgnoreScope {
+        let target = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        IgnoreScope {
+            entries: self.active_entries(),
+            fallback: IgnoreRules::new(&target, &self.global_ignore, &[]),
+        }
     }
 
     /// Save config to file in [[paths]] TOML format.
@@ -501,210 +482,163 @@ mod tests {
     use super::*;
 
     /// Build a PathEntry with a synthetic canonical path (no filesystem access needed).
-    fn make_entry(canonical: &str, action: PathAction, mode: PathMode) -> PathEntry {
+    fn make_entry(canonical: &str, mode: PathMode) -> PathEntry {
         PathEntry {
             raw: canonical.to_string(),
-            action,
             mode,
             canonical: Some(PathBuf::from(canonical)),
             status: PathStatus::Active,
-            overrides: None,
             ignore: Vec::new(),
         }
+    }
+
+    fn with_ignore(mut entry: PathEntry, patterns: &[&str]) -> PathEntry {
+        entry.ignore = patterns.iter().map(|p| p.to_string()).collect();
+        entry
     }
 
     fn make_not_found(raw: &str) -> PathEntry {
         PathEntry {
             raw: raw.to_string(),
-            action: PathAction::Watch,
             mode: PathMode::Recursive,
             canonical: None,
             status: PathStatus::NotFound,
-            overrides: None,
             ignore: Vec::new(),
         }
     }
 
-    // --- 2 entries: same path ---
+    fn statuses(entries: &mut [PathEntry], global: &[&str]) -> Vec<PathStatus> {
+        let global: Vec<String> = global.iter().map(|p| p.to_string()).collect();
+        compute_statuses(entries, &global);
+        entries.iter().map(|e| e.status).collect()
+    }
+
+    use PathMode::{Children, Recursive};
+    use PathStatus::{Active, Redundant};
+
+    // --- Same path ---
 
     #[test]
-    fn duplicate_same_action_same_mode() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Redundant(0));
+    fn duplicate_same_mode() {
+        let mut e = vec![make_entry("/a", Recursive), make_entry("/a", Recursive)];
+        assert_eq!(statuses(&mut e, &[]), [Active, Redundant(0)]);
     }
 
     #[test]
-    fn duplicate_same_action_recursive_over_children() {
-        // Children first, Recursive second — Recursive should win
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Children),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Redundant(1));
-        assert_eq!(entries[1].status, PathStatus::Active);
+    fn duplicate_recursive_over_children() {
+        let mut e = vec![make_entry("/a", Children), make_entry("/a", Recursive)];
+        assert_eq!(statuses(&mut e, &[]), [Redundant(1), Active]);
     }
 
     #[test]
-    fn duplicate_same_action_children_under_recursive() {
-        // Recursive first, Children second — Recursive keeps Active
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Children),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Redundant(0));
-    }
-
-    #[test]
-    fn duplicate_different_action() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a", PathAction::Ignore, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Overridden(0));
-    }
-
-    #[test]
-    fn duplicate_different_action_ignore_first() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Ignore, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Overridden(0));
-    }
-
-    // --- 3+ entries: same path (group processing) ---
-
-    #[test]
-    fn triple_same_action_same_mode() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Redundant(0));
-        assert_eq!(entries[2].status, PathStatus::Redundant(0));
+    fn duplicate_children_after_recursive() {
+        let mut e = vec![make_entry("/a", Recursive), make_entry("/a", Children)];
+        assert_eq!(statuses(&mut e, &[]), [Active, Redundant(0)]);
     }
 
     #[test]
     fn triple_children_children_recursive() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Children),
-            make_entry("/a", PathAction::Watch, PathMode::Children),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
+        let mut e = vec![
+            make_entry("/a", Children),
+            make_entry("/a", Children),
+            make_entry("/a", Recursive),
         ];
-        compute_statuses(&mut entries);
-        // Recursive (#2) wins
-        assert_eq!(entries[0].status, PathStatus::Redundant(2));
-        assert_eq!(entries[1].status, PathStatus::Redundant(2));
-        assert_eq!(entries[2].status, PathStatus::Active);
+        assert_eq!(statuses(&mut e, &[]), [Redundant(2), Redundant(2), Active]);
+    }
+
+    // --- Nested entries ---
+
+    #[test]
+    fn nested_without_patterns_is_redundant() {
+        let mut e = vec![make_entry("/a", Recursive), make_entry("/a/b", Recursive)];
+        assert_eq!(statuses(&mut e, &[]), [Active, Redundant(0)]);
     }
 
     #[test]
-    fn triple_watch_ignore_watch() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a", PathAction::Ignore, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
+    fn nested_with_own_patterns_is_active() {
+        let mut e = vec![
+            make_entry("/a", Recursive),
+            with_ignore(make_entry("/a/b", Recursive), &["*.tmp"]),
         ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Overridden(0));
-        assert_eq!(entries[2].status, PathStatus::Redundant(0));
+        assert_eq!(statuses(&mut e, &[]), [Active, Active]);
     }
 
     #[test]
-    fn triple_watch_children_ignore_watch_recursive() {
-        // Watch/Children, Ignore/Recursive, Watch/Recursive
-        // Winning action = Watch (first), winner = Watch/Recursive (#2)
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Children),
-            make_entry("/a", PathAction::Ignore, PathMode::Recursive),
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
+    fn nested_reincludes_path_ignored_by_parent() {
+        let mut e = vec![
+            with_ignore(make_entry("/a", Recursive), &["/b/"]),
+            make_entry("/a/b/c", Children),
         ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Redundant(2));
-        assert_eq!(entries[1].status, PathStatus::Overridden(2));
-        assert_eq!(entries[2].status, PathStatus::Active);
-    }
-
-    // --- Parent-child relationships (Phase 2 regression) ---
-
-    #[test]
-    fn parent_child_same_action() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a/b", PathAction::Watch, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Redundant(0));
+        assert_eq!(statuses(&mut e, &[]), [Active, Active]);
     }
 
     #[test]
-    fn parent_child_different_action() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_entry("/a/b", PathAction::Ignore, PathMode::Recursive),
+    fn nested_reincludes_path_ignored_globally() {
+        let mut e = vec![
+            make_entry("/a", Recursive),
+            make_entry("/a/x/node_modules/m", Recursive),
         ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Active);
-        assert_eq!(entries[1].overrides, Some(0));
+        assert_eq!(statuses(&mut e, &["node_modules/"]), [Active, Active]);
+    }
+
+    #[test]
+    fn nested_compares_against_nearest_active_parent() {
+        // /a/b is redundant, so /a/b/c is compared against /a.
+        let mut e = vec![
+            make_entry("/a", Recursive),
+            make_entry("/a/b", Recursive),
+            make_entry("/a/b/c", Recursive),
+        ];
+        assert_eq!(statuses(&mut e, &[]), [Active, Redundant(0), Redundant(0)]);
     }
 
     #[test]
     fn children_mode_parent_no_coverage() {
-        // Children mode parent does not cover child subdirectories
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Children),
-            make_entry("/a/b", PathAction::Watch, PathMode::Recursive),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::Active);
-        assert!(entries[1].overrides.is_none());
+        let mut e = vec![make_entry("/a", Children), make_entry("/a/b", Recursive)];
+        assert_eq!(statuses(&mut e, &[]), [Active, Active]);
+    }
+
+    // --- effective_entry ---
+
+    #[test]
+    fn effective_entry_picks_longest_and_matches_across_nfc_rename() {
+        use unicode_normalization::UnicodeNormalization;
+        let nfd: String = "자료".nfd().collect();
+        // Canonical paths were captured while "자료" was NFD on disk.
+        let config = Config {
+            paths: vec![
+                make_entry("/w", Recursive),
+                make_entry(&format!("/w/{nfd}/b"), Recursive),
+                make_entry("/c", Children),
+            ],
+            global_ignore: vec![],
+        };
+        let entries = config.active_entries();
+        // After "자료" is renamed to NFC, events arrive with NFC paths.
+        let hit = effective_entry(Path::new("/w/자료/b/x.txt"), &entries).unwrap();
+        assert_eq!(hit.canonical, PathBuf::from(format!("/w/{nfd}/b")));
+        assert_eq!(
+            effective_entry(Path::new("/w/y.txt"), &entries)
+                .unwrap()
+                .canonical,
+            PathBuf::from("/w")
+        );
+        assert!(effective_entry(Path::new("/c/d/x.txt"), &entries).is_none());
+        assert!(effective_entry(Path::new("/c/x.txt"), &entries).is_some());
     }
 
     // --- Edge cases ---
 
     #[test]
     fn empty_entries() {
-        let mut entries: Vec<PathEntry> = vec![];
-        compute_statuses(&mut entries);
-        // No panic
-    }
-
-    #[test]
-    fn single_entry() {
-        let mut entries = vec![make_entry("/a", PathAction::Watch, PathMode::Recursive)];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert!(entries[0].overrides.is_none());
+        let mut e: Vec<PathEntry> = vec![];
+        assert!(statuses(&mut e, &[]).is_empty());
     }
 
     #[test]
     fn not_found_entry_keeps_status() {
-        let mut entries = vec![
-            make_entry("/a", PathAction::Watch, PathMode::Recursive),
-            make_not_found("/nonexistent"),
-        ];
-        compute_statuses(&mut entries);
-        assert_eq!(entries[0].status, PathStatus::Active);
-        assert_eq!(entries[1].status, PathStatus::NotFound);
+        let mut e = vec![make_entry("/a", Recursive), make_not_found("/nonexistent")];
+        assert_eq!(statuses(&mut e, &[]), [Active, PathStatus::NotFound]);
     }
 
     #[test]
@@ -714,13 +648,11 @@ ignore = [".git/", "*.app/"]
 
 [[paths]]
 path = "~/Downloads"
-action = "watch"
 mode = "recursive"
 ignore = ["*.crdownload", "!/torrents/한글/"]
 
 [[paths]]
 path = "~/Documents"
-action = "watch"
 mode = "children"
 "#;
         let parsed: ConfigFile = toml::from_str(src).unwrap();
@@ -735,8 +667,14 @@ mode = "children"
     }
 
     #[test]
+    fn legacy_action_field_is_rejected() {
+        let src = "[[paths]]\npath = \"~/a\"\naction = \"ignore\"\nmode = \"recursive\"\n";
+        assert!(toml::from_str::<ConfigFile>(src).is_err());
+    }
+
+    #[test]
     fn config_without_ignore_still_parses() {
-        let src = "[[paths]]\npath = \"~/a\"\naction = \"watch\"\nmode = \"recursive\"\n";
+        let src = "[[paths]]\npath = \"~/a\"\nmode = \"recursive\"\n";
         let parsed: ConfigFile = toml::from_str(src).unwrap();
         assert!(parsed.global.ignore.is_empty());
         assert_eq!(toml::to_string_pretty(&parsed).unwrap(), src);

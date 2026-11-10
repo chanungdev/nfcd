@@ -95,14 +95,11 @@ enum ConfigAction {
         #[arg(long)]
         json: bool,
     },
-    /// Add a path to watch or ignore
+    /// Add a path to watch (ignore patterns are set in config.toml)
     Add {
         /// Target directory path
         path: String,
-        /// watch or ignore
-        #[arg(long, default_value = "watch")]
-        action: String,
-        /// recursive or children (ignore only supports recursive)
+        /// recursive or children
         #[arg(long, default_value = "recursive")]
         mode: String,
         /// Preview the effect without saving

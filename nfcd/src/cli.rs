@@ -6,9 +6,8 @@ use std::process::{Command as ProcessCommand, Stdio};
 
 use serde_json::json;
 
-use nfcd_core::config::{self, PathAction, PathEntry, PathMode, PathStatus};
+use nfcd_core::config::{self, IgnoreScope, PathEntry, PathMode, PathStatus};
 use nfcd_core::constants::{CONFIG_PATH, PLIST_PATH, SERVICE_LABEL};
-use nfcd_core::ignore::IgnoreRules;
 use nfcd_core::normalizer::{self, NormalizationTarget, get_actual_file_name};
 use nfcd_core::utils::{abbreviate_home_path, expand_tilde};
 
@@ -58,7 +57,6 @@ fn cmd_status(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (config, _) = config::load_config();
     let mut active = 0u32;
     let mut redundant = 0u32;
-    let mut overridden = 0u32;
     let mut not_found = 0u32;
     let mut not_a_directory = 0u32;
     let mut permission_denied = 0u32;
@@ -66,7 +64,6 @@ fn cmd_status(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         match entry.status {
             PathStatus::Active => active += 1,
             PathStatus::Redundant(_) => redundant += 1,
-            PathStatus::Overridden(_) => overridden += 1,
             PathStatus::NotFound => not_found += 1,
             PathStatus::NotADirectory => not_a_directory += 1,
             PathStatus::PermissionDenied => permission_denied += 1,
@@ -107,7 +104,6 @@ fn cmd_status(json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "total": total,
                 "active": active,
                 "redundant": redundant,
-                "overridden": overridden,
                 "not_found": not_found,
                 "not_a_directory": not_a_directory,
                 "permission_denied": permission_denied,
@@ -189,9 +185,6 @@ fn cmd_status(json: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
             if redundant > 0 {
                 parts.push(format!("{} redundant", redundant));
-            }
-            if overridden > 0 {
-                parts.push(format!("{} overridden", overridden));
             }
             if not_found > 0 {
                 parts.push(format!("{} not found", not_found));
@@ -425,11 +418,10 @@ fn cmd_config(action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
         ConfigAction::List { json } => cmd_config_list(json),
         ConfigAction::Add {
             path,
-            action,
             mode,
             dry_run,
             json,
-        } => cmd_config_add(&path, &action, &mode, dry_run, json),
+        } => cmd_config_add(&path, &mode, dry_run, json),
         ConfigAction::Remove {
             index,
             dry_run,
@@ -443,7 +435,6 @@ fn path_status_to_str(status: &PathStatus) -> &'static str {
     match status {
         PathStatus::Active => "active",
         PathStatus::Redundant(_) => "redundant",
-        PathStatus::Overridden(_) => "overridden",
         PathStatus::NotFound => "not_found",
         PathStatus::NotADirectory => "not_a_directory",
         PathStatus::PermissionDenied => "permission_denied",
@@ -461,14 +452,6 @@ fn path_status_note(status: &PathStatus, paths: &[PathEntry]) -> Option<String> 
                 abbreviate_path_str(&covered_by.raw)
             ))
         }
-        PathStatus::Overridden(idx) => {
-            let conflicts_with = &paths[*idx];
-            Some(format!(
-                "overridden by #{}: {}",
-                idx + 1,
-                abbreviate_path_str(&conflicts_with.raw)
-            ))
-        }
         PathStatus::NotFound => Some("path does not exist".to_string()),
         PathStatus::NotADirectory => Some("path is not a directory".to_string()),
         PathStatus::PermissionDenied => Some("permission denied".to_string()),
@@ -484,8 +467,8 @@ fn entry_to_json(index: usize, entry: &PathEntry, paths: &[PathEntry]) -> serde_
     json!({
         "index": index + 1,
         "path": abbreviate_path_str(&entry.raw),
-        "action": entry.action.as_str().to_lowercase(),
         "mode": entry.mode.as_str().to_lowercase(),
+        "ignore": entry.ignore,
         "status": path_status_to_str(&entry.status),
         "note": note,
     })
@@ -543,10 +526,9 @@ fn cmd_config_list(json: bool) -> Result<(), Box<dyn std::error::Error>> {
                 None => String::new(),
             };
             println!(
-                "#{:<3} {}  {}  {}  {}{}",
+                "#{:<3} {}  {}  {}{}",
                 i + 1,
                 abbreviate_path_str(&entry.raw),
-                entry.action.as_str().to_lowercase(),
                 entry.mode.as_str().to_lowercase(),
                 path_status_to_str(&entry.status),
                 note_str,
@@ -555,14 +537,6 @@ fn cmd_config_list(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-fn parse_action(s: &str) -> Result<PathAction, String> {
-    match s.to_lowercase().as_str() {
-        "watch" => Ok(PathAction::Watch),
-        "ignore" => Ok(PathAction::Ignore),
-        _ => Err(format!("Invalid action '{}'. Use 'watch' or 'ignore'.", s)),
-    }
 }
 
 fn parse_mode(s: &str) -> Result<PathMode, String> {
@@ -578,17 +552,11 @@ fn parse_mode(s: &str) -> Result<PathMode, String> {
 
 fn cmd_config_add(
     path: &str,
-    action: &str,
     mode: &str,
     dry_run: bool,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let action_val = parse_action(action)?;
     let mode_val = parse_mode(mode)?;
-
-    if action_val == PathAction::Ignore && mode_val == PathMode::Children {
-        return Err("ignore action only supports recursive mode.".into());
-    }
 
     let (mut config, _) = config::load_config();
 
@@ -597,7 +565,7 @@ fn cmd_config_add(
 
     // Add new entry
     let expanded = expand_tilde(path);
-    let new_entry = PathEntry::new(expanded, action_val, mode_val);
+    let new_entry = PathEntry::new(expanded, mode_val);
     config.paths.push(new_entry);
     config.refresh_statuses();
 
@@ -623,9 +591,8 @@ fn cmd_config_add(
         } else {
             let note = path_status_note(&new_entry.status, &config.paths);
             println!(
-                "[dry-run] Would add: {} ({}, {})",
+                "[dry-run] Would add: {} ({})",
                 abbreviate_path_str(path),
-                action_val.as_str().to_lowercase(),
                 mode_val.as_str().to_lowercase(),
             );
             println!(
@@ -648,9 +615,8 @@ fn cmd_config_add(
             );
         } else {
             println!(
-                "Added: {} ({}, {})",
+                "Added: {} ({})",
                 abbreviate_path_str(path),
-                action_val.as_str().to_lowercase(),
                 mode_val.as_str().to_lowercase(),
             );
         }
@@ -707,10 +673,9 @@ fn cmd_config_remove(
             );
         } else {
             println!(
-                "[dry-run] Would remove #{}: {} ({}, {})",
+                "[dry-run] Would remove #{}: {} ({})",
                 index,
                 abbreviate_path_str(&removed_entry.raw),
-                removed_entry.action.as_str().to_lowercase(),
                 removed_entry.mode.as_str().to_lowercase(),
             );
             print_affected_entries(&affected, &config.paths);
@@ -797,14 +762,14 @@ fn cmd_convert(
     }
 }
 
-/// Ignore rules for a manual directory conversion. Fails on a broken config
+/// Ignore scope for a manual directory conversion. Fails on a broken config
 /// rather than silently converting files the user meant to ignore.
-fn load_ignore_rules(path: &Path) -> Result<IgnoreRules, Box<dyn std::error::Error>> {
+fn load_ignore_scope(path: &Path) -> Result<IgnoreScope, Box<dyn std::error::Error>> {
     let (cfg, err) = config::load_config();
     if let Some(e) = err {
         return Err(format!("{}: {e}", e.user_message()).into());
     }
-    Ok(cfg.ignore_rules_for(path))
+    Ok(cfg.ignore_scope_for(path))
 }
 
 fn cmd_convert_dry_run(
@@ -825,7 +790,7 @@ fn cmd_convert_dry_run(
         }
         ConvertMode::Children | ConvertMode::Recursive => {
             let recursive = matches!(mode, ConvertMode::Recursive);
-            let rules = load_ignore_rules(path)?;
+            let scope = load_ignore_scope(path)?;
             // Same matching as normalize_directory: rules are rooted at canonical paths.
             let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             let mut queue = VecDeque::new();
@@ -838,10 +803,16 @@ fn cmd_convert_dry_run(
                         let name = entry.file_name().to_string_lossy().to_string();
 
                         let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-                        if let Ok(rel) = entry_path.strip_prefix(path)
-                            && rules.is_ignored(&canonical.join(rel), is_dir)
-                        {
-                            continue;
+                        if let Ok(rel) = entry_path.strip_prefix(path) {
+                            let full = canonical.join(rel);
+                            if scope.is_ignored(&full, is_dir) {
+                                // Same as normalize_directory: descend (without listing) only
+                                // if a nested entry re-includes something below.
+                                if recursive && is_dir && scope.has_entry_below(&full) {
+                                    queue.push_back(entry_path);
+                                }
+                                continue;
+                            }
                         }
 
                         if target.needs_conversion(&name) {
@@ -913,8 +884,8 @@ fn cmd_convert_execute(
         }
         ConvertMode::Children | ConvertMode::Recursive => {
             let recursive = matches!(mode, ConvertMode::Recursive);
-            let rules = load_ignore_rules(path)?;
-            let result = normalizer::normalize_directory(path, recursive, target, Some(&rules))?;
+            let scope = load_ignore_scope(path)?;
+            let result = normalizer::normalize_directory(path, recursive, target, Some(&scope))?;
 
             if json {
                 let converted: Vec<String> = result

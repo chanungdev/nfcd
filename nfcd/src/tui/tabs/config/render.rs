@@ -24,28 +24,25 @@ use crate::tui::tabs::config::modal::render::render_add_modal;
 use crate::tui::tabs::config::state::ConfigState;
 use std::path::Path;
 
-use nfcd_core::config::{PathAction, PathEntry, PathMode, PathStatus};
+use nfcd_core::config::{PathEntry, PathMode, PathStatus};
 use nfcd_core::utils::abbreviate_home_path;
 
 fn path_description(idx: usize, entries: &[PathEntry]) -> String {
     let entry = &entries[idx];
     let desc = match &entry.status {
         PathStatus::Active => {
-            let desc = match (entry.action, entry.mode) {
-                (PathAction::Watch, PathMode::Recursive) => {
+            let desc = match entry.mode {
+                PathMode::Recursive => {
                     "Watches for changes and auto-converts NFD names to NFC in this directory and all subdirectories."
                 }
-                (PathAction::Watch, PathMode::Children) => {
+                PathMode::Children => {
                     "Watches for changes and auto-converts NFD names to NFC in this directory only, not subdirectories."
                 }
-                (PathAction::Ignore, _) => {
-                    "Excludes this directory and all subdirectories from watching."
-                }
             };
-            if let Some(p) = entry.overrides {
-                format!("Overrides #{}. {}", p + 1, desc)
-            } else {
+            if entry.ignore.is_empty() {
                 desc.to_string()
+            } else {
+                format!("{} Ignores: {}", desc, entry.ignore.join(", "))
             }
         }
         PathStatus::Redundant(n) => {
@@ -54,9 +51,6 @@ fn path_description(idx: usize, entries: &[PathEntry]) -> String {
             } else {
                 format!("Already covered by #{}. This rule is not applied.", n + 1)
             }
-        }
-        PathStatus::Overridden(n) => {
-            format!("Overridden by #{}. This rule is not applied.", n + 1)
         }
         PathStatus::NotFound => "Path not found. This rule is not applied.".to_string(),
         PathStatus::NotADirectory => "Not a directory. This rule is not applied.".to_string(),
@@ -228,15 +222,9 @@ pub fn render(
                     .add_modifier(Modifier::CROSSED_OUT)
             };
 
-            let (mode_text, mode_style) = if entry.action == PathAction::Ignore {
-                (
-                    "Recursive",
-                    Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::ITALIC),
-                )
-            } else {
-                (entry.mode.as_str(), Style::default())
+            let ignore_text = match entry.ignore.len() {
+                0 => "-".to_string(),
+                n => n.to_string(),
             };
 
             let abbreviated = abbreviate_home_path(Path::new(&entry.raw));
@@ -249,8 +237,8 @@ pub fn render(
             Row::new(vec![
                 Cell::from(format!("{}", idx + 1)),
                 path_cell,
-                Cell::from(entry.action.as_str()),
-                Cell::from(mode_text).style(mode_style),
+                Cell::from(ignore_text),
+                Cell::from(entry.mode.as_str()),
                 Cell::from(format!(
                     "{} {}",
                     entry.status.symbol(),
@@ -265,14 +253,7 @@ pub fn render(
     let header_cells = vec![
         Cell::from("#").style(Style::default().fg(Color::Cyan)),
         Cell::from("Path").style(Style::default().fg(Color::Cyan)),
-        Cell::from(Line::from(vec![
-            Span::styled("Ac", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                "t",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("ion", Style::default().fg(Color::Cyan)),
-        ])),
+        Cell::from("Ignore").style(Style::default().fg(Color::Cyan)),
         Cell::from(Line::from(vec![
             Span::styled(
                 "M",
@@ -290,13 +271,10 @@ pub fn render(
 
     f.render_stateful_widget(table, table_area, &mut state.table_state);
 
-    // Register table header click areas for Action and Mode columns
+    // Register table header click area for the Mode column
     if register {
         let col_rects = Layout::horizontal(widths).spacing(1).split(table_area);
         let header_y = table_area.y;
-        // Action column (index 2) → 't' key (text "Action" = 6 chars)
-        let action_rect = Rect::new(col_rects[2].x, header_y, 6, 1);
-        mouse.add(action_rect, KeyCode::Char('t'));
         // Mode column (index 3) → 'm' key (text "Mode" = 4 chars)
         let mode_rect = Rect::new(col_rects[3].x, header_y, 4, 1);
         mouse.add(mode_rect, KeyCode::Char('m'));

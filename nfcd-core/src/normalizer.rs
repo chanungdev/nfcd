@@ -1,4 +1,4 @@
-use crate::ignore::IgnoreRules;
+use crate::config::IgnoreScope;
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::ffi::CStr;
@@ -160,7 +160,7 @@ fn process_entry(
     target: NormalizationTarget,
     target_folder: &Path,
     recursive: bool,
-    ignore: Option<(&IgnoreRules, &Path)>,
+    ignore: Option<(&IgnoreScope, &Path)>,
 ) -> (
     Result<Option<ConversionResult>, ConversionError>,
     Option<PathBuf>,
@@ -176,22 +176,28 @@ fn process_entry(
         return (Ok(None), None);
     }
 
-    // Ignored entries are neither renamed nor descended into.
-    // Rules are rooted at a canonical path, so match against the canonical form
+    // Ignored entries are neither renamed nor descended into, except that an
+    // ignored directory containing a nested entry is still descended into.
+    // Rules are rooted at canonical paths, so match against the canonical form
     // of `path` (the caller may pass a relative or non-canonical target folder).
     // file_type() comes from readdir (d_type), so no extra syscall.
-    if let Some((rules, canonical_target)) = ignore
+    let mut skip_rename = false;
+    if let Some((scope, canonical_target)) = ignore
         && let Ok(rel) = path.strip_prefix(target_folder)
     {
         let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-        if rules.is_ignored(&canonical_target.join(rel), is_dir) {
-            return (Ok(None), None);
+        let full = canonical_target.join(rel);
+        if scope.is_ignored(&full, is_dir) {
+            if !(is_dir && scope.has_entry_below(&full)) {
+                return (Ok(None), None);
+            }
+            skip_rename = true;
         }
     }
 
     let original_name = name.to_string_lossy();
 
-    let (result, new_path) = if target.needs_conversion(&original_name) {
+    let (result, new_path) = if !skip_rename && target.needs_conversion(&original_name) {
         let new_name = target.convert(&original_name);
         let renamed_path = path.with_file_name(&new_name);
         match fs::rename(&path, &renamed_path) {
@@ -237,7 +243,7 @@ pub fn normalize_directory(
     target_folder: &Path,
     recursive: bool,
     target: NormalizationTarget,
-    ignore: Option<&IgnoreRules>,
+    ignore: Option<&IgnoreScope>,
 ) -> Result<DirectoryResult, NormalizerError> {
     let mut converted = Vec::new();
     let mut errors = Vec::new();
@@ -245,7 +251,7 @@ pub fn normalize_directory(
     // On failure, read_dir below reports the error as before.
     let canonical_target =
         fs::canonicalize(target_folder).unwrap_or_else(|_| target_folder.to_path_buf());
-    let ignore = ignore.map(|rules| (rules, canonical_target.as_path()));
+    let ignore = ignore.map(|scope| (scope, canonical_target.as_path()));
 
     let mut queue = VecDeque::new();
     queue.push_back(target_folder.to_path_buf());
@@ -376,33 +382,58 @@ mod tests {
 
     #[test]
     fn test_normalize_directory_skips_ignored() {
+        use crate::config::{Config, PathEntry, PathMode};
+
+        // w/
+        //   건너뛰기/안쪽.txt      ignored by /건너뛰기/
+        //   건너뛰기/살림/가.txt   re-included by a nested entry (살림 itself converted)
+        //   임시.tmp              ignored by global *.tmp
+        //   변환.txt              converted
         let temp = TempDir::new().unwrap();
-        let skip = temp.path().join("건너뛰기".nfd().collect::<String>());
-        fs::create_dir(&skip).unwrap();
+        let nfd = |s: &str| s.nfd().collect::<String>();
+        let skip = temp.path().join(nfd("건너뛰기"));
+        let keep = skip.join(nfd("살림"));
+        fs::create_dir_all(&keep).unwrap();
         create_nfd_file(&skip, "안쪽.txt");
+        create_nfd_file(&keep, "가.txt");
         create_nfd_file(temp.path(), "임시.tmp");
         create_nfd_file(temp.path(), "변환.txt");
 
-        // Patterns are NFC; on-disk names are NFD.
-        // Rules are rooted at the canonical path (/private/var/...), traversal uses
-        // the raw temp path (/var/...), as with ignore_rules_for() in real callers.
-        let rules = IgnoreRules::new(
-            &fs::canonicalize(temp.path()).unwrap(),
-            &["*.tmp".to_string()],
-            &["/건너뛰기/".to_string()],
-        );
-        normalize_directory(temp.path(), true, NormalizationTarget::NFC, Some(&rules)).unwrap();
+        // Patterns and config paths are NFC; on-disk names are NFD.
+        let mut root = PathEntry::new(temp.path().to_path_buf(), PathMode::Recursive);
+        root.ignore = vec!["/건너뛰기/".to_string()];
+        let nested = PathEntry::new(temp.path().join("건너뛰기/살림"), PathMode::Recursive);
+        let mut config = Config {
+            paths: vec![root, nested],
+            global_ignore: vec!["*.tmp".to_string()],
+        };
+        config.refresh_statuses();
+        let scope = config.ignore_scope_for(temp.path());
+
+        // Traverse via the raw temp path (/var/...); entries are canonical (/private/var/...).
+        normalize_directory(temp.path(), true, NormalizationTarget::NFC, Some(&scope)).unwrap();
 
         let names = |dir: &Path| -> Vec<String> {
-            fs::read_dir(dir)
+            let mut v: Vec<String> = fs::read_dir(dir)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-                .collect()
+                .collect();
+            v.sort();
+            v
         };
         let top = names(temp.path());
         assert!(top.contains(&"변환.txt".to_string()));
-        assert!(top.contains(&"임시.tmp".nfd().collect::<String>()));
-        assert!(top.contains(&"건너뛰기".nfd().collect::<String>()));
-        assert_eq!(names(&skip), vec!["안쪽.txt".nfd().collect::<String>()]);
+        assert!(top.contains(&nfd("임시.tmp")));
+        assert!(top.contains(&nfd("건너뛰기")), "ignored dir is not renamed");
+        // The nested entry's own root is not ignored by its rules, so it is converted
+        // (same as the watcher); its ignored parent and siblings are left alone.
+        let mut expected = vec!["살림".to_string(), nfd("안쪽.txt")];
+        expected.sort();
+        assert_eq!(names(&skip), expected);
+        assert_eq!(
+            names(&keep),
+            vec!["가.txt".to_string()],
+            "nested entry re-includes"
+        );
     }
 }

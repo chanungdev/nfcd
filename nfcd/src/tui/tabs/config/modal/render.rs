@@ -5,11 +5,9 @@ use crate::tui::shortcuts::{
 };
 use crate::tui::styles::{
     active_value_style, inactive_italic_style, inactive_style, key_style, label_style,
-    reverse_value_style,
 };
 use crate::tui::tabs::config::modal::state::AddModalState;
 use crossterm::event::KeyCode;
-use nfcd_core::config::PathAction;
 use nfcd_core::utils::abbreviate_home_path;
 use ratatui::{
     Frame,
@@ -153,60 +151,18 @@ pub fn render_add_modal(
     let na_style = inactive_italic_style();
 
     let option_items: Vec<(Vec<Span>, Option<KeyCode>)> = if is_parent {
-        let action_spans = vec![
-            Span::styled("Action: ", inactive_style()),
-            Span::styled("N/A", na_style),
-        ];
-        let separator_spans = vec![Span::styled("  |  ", inactive_style())];
         let mode_spans = vec![
             Span::styled("Mode: ", inactive_style()),
             Span::styled("N/A", na_style),
         ];
-        vec![
-            (action_spans, None),
-            (separator_spans, None),
-            (mode_spans, None),
-        ]
+        vec![(mode_spans, None)]
     } else {
-        let is_ignore = modal.action == PathAction::Ignore;
-        let action_text = if is_ignore { "Ignore" } else { "Watch" };
-        let action_span = if is_ignore {
-            Span::styled(action_text, reverse_value_style())
-        } else {
-            Span::styled(action_text, active_value_style())
-        };
-
-        let (mode_text, mode_style) = if is_ignore {
-            ("Recursive", inactive_italic_style())
-        } else {
-            (modal.mode.as_str(), active_value_style())
-        };
-
-        let action_spans = vec![
-            Span::styled("Ac", label_style()),
-            Span::styled("t", key_style()),
-            Span::styled("ion: ", label_style()),
-            action_span,
-        ];
-        let separator_spans = vec![Span::raw("  |  ")];
         let mode_spans = vec![
             Span::styled("M", key_style()),
             Span::styled("ode: ", label_style()),
-            Span::styled(mode_text, mode_style),
+            Span::styled(modal.mode.as_str(), active_value_style()),
         ];
-
-        vec![
-            (action_spans, Some(KeyCode::Char('t'))),
-            (separator_spans, None),
-            (
-                mode_spans,
-                if !is_ignore {
-                    Some(KeyCode::Char('m'))
-                } else {
-                    None
-                },
-            ),
-        ]
+        vec![(mode_spans, Some(KeyCode::Char('m')))]
     };
 
     render_centered_options(option_items, options_area, f, mouse);

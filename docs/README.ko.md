@@ -30,7 +30,7 @@ macOS는 파일명을 NFD로 저장하지만, Windows와 Linux는 NFC를 사용�
 ## 주요 기능
 
 - **실시간 감시** — NFD 파일명이 생성되면 즉시 NFC로 변환
-- **감시 경로 설정** — `watch`/`ignore` 액션과 `recursive`/`children` 모드를 조합해 감시 범위를 세밀하게 조절
+- **감시 경로 설정** — `recursive`/`children` 모드와 gitignore 형식의 ignore 패턴으로 변환 범위를 세밀하게 조절
 - **수동 변환** — 파일명을 NFD/NFC 간 변환, 폴더 단위 재귀 변환 지원
 - **로그 뷰어** — 과거 감시 로그 조회 및 실시간 로그 스트리밍
 - **직관적인 TUI** — 화면에 모든 단축키가 표시되며 마우스 조작도 가능
@@ -46,7 +46,27 @@ Home 탭에서 watcher 서비스의 현재 상태를 확인하고, 시작/중지
 
 <img src="https://github.com/elgar328/nfd2nfc/releases/download/assets/config.png" alt="Config" width="750" />
 
-Config 탭에서 감시할 디렉토리를 관리합니다. 각 경로의 액션(`watch` 또는 `ignore`), 모드(`recursive` 또는 `children`), 유효성 상태를 확인할 수 있습니다.
+Config 탭에서 감시할 디렉토리를 관리합니다. 각 경로의 모드(`recursive` 또는 `children`), ignore 패턴 개수, 유효성 상태를 확인할 수 있습니다.
+
+### Ignore 패턴
+
+`~/.config/nfcd/config.toml`에 gitignore 형식의 패턴으로 제외할 파일과 폴더를 지정합니다 (아직 TUI에서는 패턴을 편집할 수 없습니다):
+
+```toml
+[global]                        # 모든 경로에 적용
+ignore = [".git/", "node_modules/", "*.app/"]
+
+[[paths]]
+path = "~/Downloads"
+mode = "recursive"
+ignore = ["*.crdownload", "/torrents/*", "!/torrents/keep/"]
+```
+
+`*`, `**`, `!` 예외, 끝의 `/`(폴더 전용), 앞의 `/`(해당 경로 기준 고정)를 지원합니다. 한글 이름은 NFD/NFC 형태와 관계없이 매칭됩니다.
+
+다른 항목 안에 있는 경로를 따로 등록하면, 그 아래는 global 패턴과 자기 패턴만 적용됩니다. 상위 항목이 ignore한 폴더를 다시 감시할 때 사용합니다.
+
+설정을 바꾼 뒤에는 watcher를 재시작해야 합니다.
 
 ## Logs
 
@@ -68,7 +88,7 @@ Browser 탭에서 파일과 디렉토리의 정규화 형식(NFD/NFC)을 확인�
 nfcd status [--json]
 nfcd watcher start|stop|restart
 nfcd config list [--json]
-nfcd config add <path> [--action watch|ignore] [--mode recursive|children] [--dry-run] [--json]
+nfcd config add <path> [--mode recursive|children] [--dry-run] [--json]
 nfcd config remove <index> [--dry-run] [--json]
 nfcd config sort
 nfcd convert <path> [--mode name|children|recursive] [--target nfc|nfd] [--dry-run] [--json]
@@ -86,7 +106,7 @@ Binary:           ~/.cargo/bin/nfcd
 Watcher binary:   ~/.cargo/bin/nfcd-watcher
 Config:           ~/.config/nfcd/config.toml
 Plist:            ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
-Registered paths: 6 total (4 active, 1 overridden, 1 not found)
+Registered paths: 6 total (4 active, 1 redundant, 1 not found)
 Full Disk Access: granted
 Update:           up to date
 ```

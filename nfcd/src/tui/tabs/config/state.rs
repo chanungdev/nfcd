@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use ratatui::widgets::TableState;
 
-use nfcd_core::config::{Config, PathAction, PathEntry, PathMode, load_config};
+use nfcd_core::config::{Config, PathEntry, PathMode, load_config};
 use nfcd_core::constants::CONFIG_PATH;
 
 use crate::tui::component::{SharedState, next_index, prev_index};
@@ -77,21 +77,8 @@ impl ConfigState {
         self.move_item(1);
     }
 
-    pub fn toggle_action(&mut self) {
-        if let Some(i) = self.table_state.selected() {
-            self.config.paths[i].action = self.config.paths[i].action.toggle();
-            if self.config.paths[i].action == PathAction::Ignore {
-                self.config.paths[i].mode = PathMode::Recursive;
-            }
-            self.mark_changed();
-        }
-    }
-
     pub fn toggle_mode(&mut self) {
         if let Some(i) = self.table_state.selected() {
-            if self.config.paths[i].action == PathAction::Ignore {
-                return;
-            }
             self.config.paths[i].mode = self.config.paths[i].mode.toggle();
             self.mark_changed();
         }
@@ -109,8 +96,8 @@ impl ConfigState {
         }
     }
 
-    pub fn add_path(&mut self, path: PathBuf, action: PathAction, mode: PathMode) {
-        self.config.paths.push(PathEntry::new(path, action, mode));
+    pub fn add_path(&mut self, path: PathBuf, mode: PathMode) {
+        self.config.paths.push(PathEntry::new(path, mode));
         self.mark_changed();
         self.table_state.select(Some(self.config.paths.len() - 1));
     }

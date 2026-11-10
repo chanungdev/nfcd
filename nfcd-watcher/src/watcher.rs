@@ -1,6 +1,6 @@
 use crate::handler;
 use log::{debug, error, info};
-use nfcd_core::config::{ActiveEntry, PathAction, PathMode};
+use nfcd_core::config::{ActiveEntry, PathMode, effective_entry};
 use nfcd_core::constants::{HEARTBEAT_INTERVAL, HEARTBEAT_PATH, PLIST_PATH};
 use nfcd_core::normalizer::NormalizationTarget;
 use notify::event::{CreateKind, EventKind};
@@ -18,21 +18,6 @@ const MAX_CONCURRENT_TASKS: usize = 200;
 /// Debounce window for deduplicating events on the same path.
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(50);
 
-/// Determine the effective entry for an event path based on active entries.
-/// Returns the most specific (longest canonical path) matching active entry.
-fn effective_entry<'a>(
-    event_path: &Path,
-    active_entries: &'a [ActiveEntry],
-) -> Option<&'a ActiveEntry> {
-    active_entries
-        .iter()
-        .filter(|e| match e.mode {
-            PathMode::Recursive => event_path.starts_with(&e.canonical),
-            PathMode::Children => event_path.parent() == Some(&*e.canonical),
-        })
-        .max_by_key(|e| e.canonical.as_os_str().len())
-}
-
 /// Whether the event path is a directory. Uses the event kind when FSEvents
 /// reports it (create events); otherwise falls back to lstat.
 fn is_dir_event(event: &Event, path: &Path) -> bool {
@@ -43,60 +28,65 @@ fn is_dir_event(event: &Event, path: &Path) -> bool {
     }
 }
 
-/// Register watch paths with the notify watcher. Returns (recursive_count, children_count, ignore_count).
+/// Register watch paths with the notify watcher. Returns (recursive_count, children_count).
+///
+/// Entries nested under another recursive entry are not registered: the parent's
+/// stream already delivers their events, and effective_entry() routes each event
+/// to the most specific entry. Registering both would deliver every event twice.
 fn register_watch_paths(
     watcher: &mut RecommendedWatcher,
     entries: &[ActiveEntry],
-) -> (usize, usize, usize) {
+) -> (usize, usize) {
     let mut recursive_count = 0usize;
     let mut children_count = 0usize;
-    let mut ignore_count = 0usize;
 
     for entry in entries {
-        match entry.action {
-            PathAction::Watch => {
-                let notify_mode = match entry.mode {
-                    PathMode::Recursive => RecursiveMode::Recursive,
-                    PathMode::Children => RecursiveMode::NonRecursive,
-                };
-                match watcher.watch(&entry.canonical, notify_mode) {
-                    Ok(()) => {
-                        debug!("Watching path: {}", entry.canonical.display());
-                        match entry.mode {
-                            PathMode::Recursive => recursive_count += 1,
-                            PathMode::Children => children_count += 1,
-                        }
-                    }
-                    Err(e) => error!(
-                        "Failed to watch path: {} - {}",
-                        entry.canonical.display(),
-                        e
-                    ),
-                }
-            }
-            PathAction::Ignore => {
-                ignore_count += 1;
-            }
+        match entry.mode {
+            PathMode::Recursive => recursive_count += 1,
+            PathMode::Children => children_count += 1,
+        }
+        let covered = entries.iter().any(|p| {
+            p.mode == PathMode::Recursive
+                && p.canonical != entry.canonical
+                && entry.canonical.starts_with(&p.canonical)
+        });
+        if covered {
+            debug!(
+                "Nested path handled by parent stream: {}",
+                entry.canonical.display()
+            );
+            continue;
+        }
+        let notify_mode = match entry.mode {
+            PathMode::Recursive => RecursiveMode::Recursive,
+            PathMode::Children => RecursiveMode::NonRecursive,
+        };
+        match watcher.watch(&entry.canonical, notify_mode) {
+            Ok(()) => debug!("Watching path: {}", entry.canonical.display()),
+            Err(e) => error!(
+                "Failed to watch path: {} - {}",
+                entry.canonical.display(),
+                e
+            ),
         }
     }
 
-    (recursive_count, children_count, ignore_count)
+    (recursive_count, children_count)
 }
 
 /// Log a summary of the registered watch paths.
-fn log_watch_summary(recursive_count: usize, children_count: usize, ignore_count: usize) {
-    if recursive_count == 0 && children_count == 0 && ignore_count == 0 {
+fn log_watch_summary(recursive_count: usize, children_count: usize) {
+    if recursive_count == 0 && children_count == 0 {
         info!(
             "nfcd-watcher v{} started. No paths configured.",
             env!("CARGO_PKG_VERSION")
         );
     } else {
         info!(
-            "nfcd-watcher v{} started. Paths: {} recursive, {} children, {} ignored.",
+            "nfcd-watcher v{} started. Paths: {} recursive, {} children.",
             env!("CARGO_PKG_VERSION"),
             recursive_count,
-            children_count,
-            ignore_count
+            children_count
         );
     }
 }
@@ -167,9 +157,8 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
         }
     };
 
-    let (recursive_count, children_count, ignore_count) =
-        register_watch_paths(&mut watcher, &entries);
-    log_watch_summary(recursive_count, children_count, ignore_count);
+    let (recursive_count, children_count) = register_watch_paths(&mut watcher, &entries);
+    log_watch_summary(recursive_count, children_count);
     spawn_heartbeat_task();
     spawn_binary_watchdog();
 
@@ -190,20 +179,19 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, entries: Vec<Activ
                             None => continue,
                         };
 
-                        // Use the most specific entry to determine if this event should be processed.
-                        let entry = match effective_entry(event_path, &entries) {
-                            Some(e) if e.action == PathAction::Watch => e,
-                            _ => continue,
-                        };
-
                         let file_name = match event_path.file_name().and_then(|s| s.to_str()) {
                             Some(name) => name,
                             None => continue,
                         };
-                        // Early filter: skip files already in NFC to avoid unnecessary spawn_blocking in handler
+                        // Early filter: skip files already in NFC before any path matching
+                        // (effective_entry allocates an NFC copy of the path).
                         if !NormalizationTarget::NFC.needs_conversion(file_name) {
                             continue;
                         }
+                        // Use the most specific entry to determine if this event should be processed.
+                        let Some(entry) = effective_entry(event_path, &entries) else {
+                            continue;
+                        };
                         // Pattern check only for names that need conversion (may lstat).
                         if entry.ignore.is_ignored(event_path, is_dir_event(&event, event_path)) {
                             continue;

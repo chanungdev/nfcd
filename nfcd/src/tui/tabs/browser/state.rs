@@ -129,8 +129,8 @@ impl BrowserState {
             if let Some(e) = err {
                 return Err(e.user_message().to_string());
             }
-            let rules = cfg.ignore_rules_for(path);
-            normalize_directory(path, recursive, target, Some(&rules))
+            let scope = cfg.ignore_scope_for(path);
+            normalize_directory(path, recursive, target, Some(&scope))
                 .map_err(|e| e.to_string())?;
         }
 

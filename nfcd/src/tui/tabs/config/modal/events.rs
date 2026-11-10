@@ -6,12 +6,11 @@ use crate::tui::component::{Action, ScrollDirection};
 use crate::tui::dir_browser::SelectionKind;
 use crate::tui::tabs::config::modal::state::AddModalState;
 use crate::tui::text_util;
-use nfcd_core::config::{PathAction, PathMode};
+use nfcd_core::config::PathMode;
 
 /// Result from modal key handling that needs to be applied to ConfigState by the caller
 pub struct ModalAddResult {
     pub path: PathBuf,
-    pub action: PathAction,
     pub mode: PathMode,
 }
 
@@ -51,7 +50,6 @@ pub fn handle_modal_key(
                 .selected_entry()
                 .map(|e| e.path.clone())
                 .unwrap_or_else(|| modal.browser.current_dir.clone());
-            let action = modal.action;
             let mode = modal.mode;
             modal.show = false;
             (
@@ -59,26 +57,14 @@ pub fn handle_modal_key(
                     message: "Path added".to_string(),
                     is_error: false,
                 }),
-                Some(ModalAddResult { path, action, mode }),
+                Some(ModalAddResult { path, mode }),
             )
-        }
-        KeyCode::Char('t') => {
-            if modal.browser.selection_kind() == SelectionKind::Parent {
-                return (None, None);
-            }
-            modal.action = modal.action.toggle();
-            if modal.action == PathAction::Ignore {
-                modal.mode = PathMode::Recursive;
-            }
-            (None, None)
         }
         KeyCode::Char('m') => {
             if modal.browser.selection_kind() == SelectionKind::Parent {
                 return (None, None);
             }
-            if modal.action != PathAction::Ignore {
-                modal.mode = modal.mode.toggle();
-            }
+            modal.mode = modal.mode.toggle();
             (None, None)
         }
         KeyCode::Char('.') => {

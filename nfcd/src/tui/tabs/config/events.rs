@@ -13,7 +13,7 @@ pub fn handle_key(state: &mut ConfigState, key: KeyCode, _shared: &SharedState) 
     if state.modal.show {
         let (action, add_result) = modal_events::handle_modal_key(&mut state.modal, key);
         if let Some(result) = add_result {
-            state.add_path(result.path, result.action, result.mode);
+            state.add_path(result.path, result.mode);
         }
         return action.or(Some(Action::Consumed));
     }
@@ -34,10 +34,6 @@ pub fn handle_key(state: &mut ConfigState, key: KeyCode, _shared: &SharedState) 
         }
         KeyCode::Char('d') | KeyCode::Delete => {
             state.delete_selected();
-            None
-        }
-        KeyCode::Char('t') => {
-            state.toggle_action();
             None
         }
         KeyCode::Char('m') => {
