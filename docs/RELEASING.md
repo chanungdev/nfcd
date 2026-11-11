@@ -76,15 +76,15 @@ git push origin main
 
 ### 5. Update the Homebrew tap
 
-The formula lives in [chanungdev/homebrew-tap](https://github.com/chanungdev/homebrew-tap) (`Formula/nfcd.rb`). Point it at the new tag:
+The formula lives in [chanungdev/homebrew-tap](https://github.com/chanungdev/homebrew-tap) (`Formula/nfcd.rb`) and installs the prebuilt `nfcd-cli.tar.gz`. Wait until the `cli` job of the Release workflow has uploaded it, then point the formula at the new tag:
 
 ```bash
-curl -sL https://github.com/chanungdev/nfcd/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+curl -sL https://github.com/chanungdev/nfcd/releases/download/vX.Y.Z/nfcd-cli.tar.gz | shasum -a 256
 # In homebrew-tap: update `url` and `sha256` in Formula/nfcd.rb, then commit and push
 git commit -am "nfcd X.Y.Z" && git push
 ```
 
-Then point the cask at the app built for the same tag. Wait until the `gui` job of the Release workflow has uploaded `nfcd-app.zip`:
+Then point the cask at the app built for the same tag. Wait until the `gui` job has uploaded `nfcd-app.zip`:
 
 ```bash
 curl -sL https://github.com/chanungdev/nfcd/releases/download/vX.Y.Z/nfcd-app.zip | shasum -a 256
@@ -103,7 +103,7 @@ The app version comes from the tag (`--config` in `release.yml`), so `nfcd-gui/`
 
 ## Automated Pipeline
 
-The `release.yml` workflow runs automatically when a `v*` tag is pushed. It creates a GitHub Release with auto-generated release notes, then builds a universal `nfcd.app` and uploads it as `nfcd-app.zip`. RC tags (e.g., `v0.2.0-rc.1`) are marked as prerelease.
+The `release.yml` workflow runs automatically when a `v*` tag is pushed. It creates a GitHub Release with auto-generated release notes, then builds universal `nfcd`/`nfcd-watcher` binaries (`nfcd-cli.tar.gz`) and a universal `nfcd.app` (`nfcd-app.zip`) and uploads them. RC tags (e.g., `v0.2.0-rc.1`) are marked as prerelease.
 
 ## Post-release Checklist
 

@@ -69,3 +69,31 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" nfcd-app.zip
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cli:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      # Prebuilt so `brew install` doesn't need Rust or a compile.
+      - name: Build nfcd and nfcd-watcher (universal)
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target "$t" -p nfcd -p nfcd-watcher
+          done
+          mkdir dist
+          for b in nfcd nfcd-watcher; do
+            lipo -create -output "dist/$b" \
+              "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
+          done
+
+      - name: Upload to the release
+        run: |
+          tar -czf nfcd-cli.tar.gz -C dist nfcd nfcd-watcher
+          gh release upload "$GITHUB_REF_NAME" nfcd-cli.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
