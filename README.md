@@ -90,6 +90,8 @@ Or run `nfcd` with no arguments to open the TUI. On first launch, the watcher is
 
 The config file is `~/.config/nfcd/config.toml`. You can edit it by hand, from the TUI Config tab, or with `nfcd config`. The watcher reloads it automatically. If the file is invalid, the watcher keeps the previous config and logs a warning.
 
+On a new install, the config starts with default global patterns for version control, dependency, and IDE folders (`.git/`, `node_modules/`, `.venv/`, `.idea/`, `.vscode/`, …) and bundles (`*.app/`, `*.photoslibrary/`). Edit or remove them like any other pattern.
+
 ```toml
 [global]                        # applied to every path
 ignore = [".git/", "node_modules/", "*.app/", "*.photoslibrary/"]

@@ -90,6 +90,8 @@ nfcd status
 
 설정 파일은 `~/.config/nfcd/config.toml`입니다. 직접 편집해도 되고, TUI의 Config 탭이나 `nfcd config` 명령을 써도 됩니다. 감시 데몬이 바뀐 내용을 알아서 다시 읽습니다. 파일에 오류가 있으면 이전 설정을 그대로 쓰고 경고를 로그에 남깁니다.
 
+처음 설치하면 설정에 기본 global 패턴이 들어 있습니다. 버전 관리, 의존성, IDE 폴더(`.git/`, `node_modules/`, `.venv/`, `.idea/`, `.vscode/` 등)와 번들(`*.app/`, `*.photoslibrary/`)입니다. 다른 패턴처럼 고치거나 지울 수 있습니다.
+
 ```toml
 [global]                        # 모든 경로에 적용
 ignore = [".git/", "node_modules/", "*.app/", "*.photoslibrary/"]

@@ -490,15 +490,42 @@ pub(crate) fn compute_statuses(entries: &mut [PathEntry], global_ignore: &[Strin
     }
 }
 
+/// Global patterns for a new install. Only names that are never worth renaming
+/// inside; generic ones like `build/` would silently skip ordinary folders.
+pub const DEFAULT_GLOBAL_IGNORE: &[&str] = &[
+    // Version control
+    ".git/",
+    ".svn/",
+    ".hg/",
+    // Dependencies
+    "node_modules/",
+    ".venv/",
+    "__pycache__/",
+    // IDE settings
+    ".idea/",
+    ".vscode/",
+    // Bundles that break if names inside change
+    "*.app/",
+    "*.photoslibrary/",
+];
+
 /// Load configuration from the default config path.
-/// Returns (Config, Option<ConfigError>).
-/// File not found → empty config, no error (normal for new installs).
+/// File not found → default global patterns, no paths, no error (new install).
 /// Parse error → empty config with error.
 pub fn load_config() -> (Config, Option<ConfigError>) {
-    let path = &*CONFIG_PATH;
+    load_config_from(&CONFIG_PATH)
+}
 
+fn load_config_from(path: &Path) -> (Config, Option<ConfigError>) {
     if !path.exists() {
-        return (Config::default(), None);
+        let config = Config {
+            paths: Vec::new(),
+            global_ignore: DEFAULT_GLOBAL_IGNORE
+                .iter()
+                .map(|p| p.to_string())
+                .collect(),
+        };
+        return (config, None);
     }
 
     let content = match fs::read_to_string(path) {
@@ -589,6 +616,22 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_config_gets_default_global_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, err) = load_config_from(&dir.path().join("config.toml"));
+        assert!(err.is_none());
+        assert!(config.paths.is_empty());
+        assert_eq!(config.global_ignore, DEFAULT_GLOBAL_IGNORE);
+
+        // An existing file is used as is: no defaults merged in.
+        let path = dir.path().join("existing.toml");
+        fs::write(&path, "").unwrap();
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_none());
+        assert!(config.global_ignore.is_empty());
+    }
 
     /// Build a PathEntry with a synthetic canonical path (no filesystem access needed).
     fn make_entry(canonical: &str, mode: PathMode) -> PathEntry {
