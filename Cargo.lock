@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "nfcd"
-version = "0.2.2-dev"
+version = "0.2.2"
 dependencies = [
  "clap",
  "crossterm",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "nfcd-core"
-version = "0.2.2-dev"
+version = "0.2.2"
 dependencies = [
  "dirs",
  "fern",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "nfcd-watcher"
-version = "0.2.2-dev"
+version = "0.2.2"
 dependencies = [
  "dirs",
  "log",
