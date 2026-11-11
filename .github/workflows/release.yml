@@ -89,6 +89,10 @@ jobs:
           for b in nfcd nfcd-watcher; do
             lipo -create -output "dist/$b" \
               "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
+            # Only the arm64 slice is linker-signed; without a valid signature over the
+            # whole binary, Full Disk Access granted to nfcd-watcher doesn't take effect.
+            codesign --force --sign - "dist/$b"
+            codesign --verify "dist/$b"
           done
 
       - name: Upload to the release
