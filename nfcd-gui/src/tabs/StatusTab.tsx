@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { isEnabled } from "@tauri-apps/plugin-autostart";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { api, type Status } from "@/lib/api";
@@ -82,7 +82,7 @@ function AutostartSwitch() {
     <label className="flex items-center gap-2 text-sm">
       <Switch
         checked={on}
-        onCheckedChange={(v) => (v ? enable() : disable()).then(() => setOn(v))}
+        onCheckedChange={(v) => api.setAutostart(v).then(() => setOn(v))}
       />
       {t("st.autostart")}
     </label>

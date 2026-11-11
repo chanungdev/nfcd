@@ -134,28 +134,47 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 /// Start at login by default: enable it on the first launch only, so turning it
 /// off in Settings sticks. Debug builds skip this to keep dev binaries out of
 /// ~/Library/LaunchAgents.
-fn enable_autostart_once(app: &tauri::App) {
-    if cfg!(debug_assertions) {
+/// Set when the user turns "open at login" off. Brew upgrades delete the LaunchAgent
+/// (the cask's `uninstall launchctl:`), so without this marker the choice is lost.
+fn autostart_off_marker(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("autostart-disabled"))
+}
+
+/// Open at login unless the user turned it off. Release builds only.
+fn restore_autostart(app: &AppHandle) {
+    if cfg!(debug_assertions) || autostart_off_marker(app).is_none_or(|m| m.exists()) {
         return;
     }
-    let Ok(dir) = app.path().app_data_dir() else {
-        return;
-    };
-    let marker = dir.join("autostart-initialized");
-    if marker.exists() {
-        return;
+    if !app.autolaunch().is_enabled().unwrap_or(true) {
+        let _ = app.autolaunch().enable();
     }
-    if app.autolaunch().enable().is_ok() {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(marker, "");
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, on: bool) -> Result<(), String> {
+    let launch = app.autolaunch();
+    let marker = autostart_off_marker(&app).ok_or("no app data dir")?;
+    if on {
+        launch.enable().map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(marker);
+    } else {
+        launch.disable().map_err(|e| e.to_string())?;
+        if let Some(dir) = marker.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(marker, "").map_err(|e| e.to_string())?;
     }
+    Ok(())
 }
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-    enable_autostart_once(app);
+    restore_autostart(app.handle());
 
     let status = MenuItem::with_id(app, "status", "Watcher: …", false, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "Start watcher", true, None::<&str>)?;
@@ -221,6 +240,7 @@ pub fn run() {
             commands::check_ignore,
             commands::status,
             commands::open_fda_settings,
+            set_autostart,
         ])
         .setup(setup)
         .build(tauri::generate_context!())

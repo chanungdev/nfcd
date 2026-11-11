@@ -54,6 +54,7 @@ export const api = {
   checkIgnore: (path: string) => invoke<IgnoreCheck | null>("check_ignore", { path }),
   status: () => invoke<Status>("status"),
   openFdaSettings: () => invoke<void>("open_fda_settings"),
+  setAutostart: (on: boolean) => invoke<void>("set_autostart", { on }),
 };
 
 /** One pattern per line, like a .gitignore file. */
