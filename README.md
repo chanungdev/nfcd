@@ -47,9 +47,11 @@ brew install chanungdev/tap/nfcd               # CLI, TUI, and watcher
 brew install --cask chanungdev/tap/nfcd-app    # menu bar app (also installs the above)
 ```
 
+Homebrew loads casks from third-party taps only after you trust them. If the cask install fails with `untrusted tap`, run `brew trust --cask chanungdev/tap/nfcd-app` and try again.
+
 ### Menu bar app
 
-The app shows the watcher status in the menu bar. From its menu you can start or stop the watcher and open **Settings…**, which edits watched folders and ignore patterns, checks a path against the ignore rules, and shows the Full Disk Access status. It opens at login; turn that off in the Status tab.
+The app shows the watcher status in the menu bar. From its menu you can start or stop the watcher and open **Settings…**, which edits watched folders and ignore patterns, checks a path against the ignore rules, and shows the Full Disk Access status. It opens at login; turn that off in the Status tab. **Quit menu bar app** closes only the app; the watcher keeps running until you choose **Stop watcher**.
 
 The app isn't signed with an Apple Developer ID yet, so macOS blocks it the first time:
 

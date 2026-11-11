@@ -47,9 +47,11 @@ brew install chanungdev/tap/nfcd               # CLI, TUI, watcher
 brew install --cask chanungdev/tap/nfcd-app    # 메뉴 막대 앱 (위 항목도 함께 설치)
 ```
 
+Homebrew는 공식 저장소가 아닌 tap의 cask를 사용자가 믿겠다고 허용해야 불러옵니다. cask 설치가 `untrusted tap` 오류로 실패하면 `brew trust --cask chanungdev/tap/nfcd-app`을 실행한 뒤 다시 설치하세요.
+
 ### 메뉴 막대 앱
 
-메뉴 막대에 watcher 상태가 표시됩니다. 메뉴에서 watcher를 시작하거나 중지할 수 있고, **Settings…**를 열면 감시 폴더와 ignore 패턴을 편집하고, 경로가 ignore되는지 확인하고, 전체 디스크 접근 권한 상태를 볼 수 있습니다. 로그인할 때 자동으로 실행되며, 상태 탭에서 끌 수 있습니다.
+메뉴 막대에 watcher 상태가 표시됩니다. 메뉴에서 watcher를 시작하거나 중지할 수 있고, **Settings…**를 열면 감시 폴더와 ignore 패턴을 편집하고, 경로가 ignore되는지 확인하고, 전체 디스크 접근 권한 상태를 볼 수 있습니다. 로그인할 때 자동으로 실행되며, 상태 탭에서 끌 수 있습니다. **Quit menu bar app**은 앱만 종료하고, watcher는 **Stop watcher**를 누를 때까지 계속 실행됩니다.
 
 앱이 아직 Apple Developer ID로 서명되지 않아서 처음 실행할 때 macOS가 막습니다.
 
