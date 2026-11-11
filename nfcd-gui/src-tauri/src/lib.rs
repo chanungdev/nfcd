@@ -7,11 +7,15 @@ use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 const ICON_RUNNING: &[u8] = include_bytes!("../icons/tray/running.png");
 const ICON_STOPPED: &[u8] = include_bytes!("../icons/tray/stopped.png");
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const WINDOW_STATE: StateFlags = StateFlags::SIZE
+    .union(StateFlags::POSITION)
+    .union(StateFlags::MAXIMIZED);
 
 /// Same check as `nfcd status`: the watcher touches the heartbeat file periodically.
 fn watcher_running() -> bool {
@@ -76,11 +80,22 @@ fn open_settings(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::default())
+    // The window-state plugin restores the last size/position when the window is built.
+    let Ok(w) = WebviewWindowBuilder::new(app, "settings", WebviewUrl::default())
         .title("nfcd Settings")
         .inner_size(720.0, 520.0)
         .build()
-        .map(|w| w.set_focus());
+    else {
+        return;
+    };
+    let _ = w.set_focus();
+    // The plugin writes to disk only on app exit; save on close so a killed app keeps it.
+    let handle = app.clone();
+    w.on_window_event(move |e| {
+        if let WindowEvent::CloseRequested { .. } = e {
+            let _ = handle.save_window_state(WINDOW_STATE);
+        }
+    });
 }
 
 fn on_menu(app: &AppHandle, event: MenuEvent) {
@@ -147,6 +162,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(WINDOW_STATE)
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             commands::load,
             commands::refresh,
