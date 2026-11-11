@@ -1,3 +1,5 @@
+mod commands;
+
 use nfcd_core::constants::{CONFIG_PATH, HEARTBEAT_MAX_AGE, HEARTBEAT_PATH, HOME_DIR};
 use std::path::PathBuf;
 use std::process::Command;
@@ -20,7 +22,7 @@ fn watcher_running() -> bool {
 }
 
 /// Apps launched from Finder don't get the shell PATH, so look in the usual install dirs.
-fn nfcd_cli() -> Option<PathBuf> {
+pub(crate) fn nfcd_cli() -> Option<PathBuf> {
     [
         PathBuf::from("/opt/homebrew/bin/nfcd"),
         PathBuf::from("/usr/local/bin/nfcd"),
@@ -144,6 +146,15 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::load,
+            commands::refresh,
+            commands::save,
+            commands::check_ignore,
+            commands::status,
+            commands::open_fda_settings,
+        ])
         .setup(setup)
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
