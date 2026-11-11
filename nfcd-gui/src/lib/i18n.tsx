@@ -1,9 +1,9 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 
 const en = {
-  "tab.paths": "Paths",
+  "tab.paths": "Watched folders",
   "tab.global": "Global ignore",
-  "tab.check": "Check path",
+  "tab.check": "Check ignore",
   "tab.status": "Status",
   "footer.revert": "Revert",
   "footer.save": "Save",
@@ -59,9 +59,9 @@ const en = {
 type Key = keyof typeof en;
 
 const ko: Record<Key, string> = {
-  "tab.paths": "경로",
+  "tab.paths": "감시 폴더",
   "tab.global": "Global ignore",
-  "tab.check": "경로 확인",
+  "tab.check": "Ignore 확인",
   "tab.status": "상태",
   "footer.revert": "되돌리기",
   "footer.save": "저장",

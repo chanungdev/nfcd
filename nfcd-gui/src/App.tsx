@@ -66,7 +66,11 @@ export default function App() {
             <TabsTrigger value="check">{t("tab.check")}</TabsTrigger>
             <TabsTrigger value="status">{t("tab.status")}</TabsTrigger>
           </TabsList>
-          <Select value={lang} onValueChange={(l) => setLang(l as Lang)}>
+          <Select
+            value={lang}
+            items={{ ko: "한국어", en: "English" }}
+            onValueChange={(l) => setLang(l as Lang)}
+          >
             <SelectTrigger size="sm" aria-label={t("language")}>
               <SelectValue />
             </SelectTrigger>

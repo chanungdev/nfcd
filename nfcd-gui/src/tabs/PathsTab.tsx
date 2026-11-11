@@ -63,7 +63,7 @@ export function PathsTab({
                 variant={expanded === i ? "secondary" : "ghost"}
                 onClick={() => setExpanded(expanded === i ? null : i)}
               >
-                {t("paths.ignore")}{p.ignore.length > 0 && ` (${p.ignore.length})`}
+                {t("paths.ignore")} ({p.ignore.length})
               </Button>
               <Button
                 size="sm"
