@@ -7,7 +7,7 @@ use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 const ICON_RUNNING: &[u8] = include_bytes!("../icons/tray/running.png");
@@ -76,23 +76,39 @@ impl Tray {
 
 fn open_settings(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("settings") {
+        // Reopening a hidden window: let the page reload config.toml, which may have changed.
+        let _ = w.emit("settings-shown", ());
         let _ = w.show();
         let _ = w.set_focus();
         return;
     }
+    // Built hidden; the page shows it after its first render (`main.tsx`) so the
+    // user never sees an empty black window while WebKit starts up.
     // The window-state plugin restores the last size/position when the window is built.
     let Ok(w) = WebviewWindowBuilder::new(app, "settings", WebviewUrl::default())
         .title("nfcd Settings")
         .inner_size(720.0, 520.0)
+        .visible(false)
         .build()
     else {
         return;
     };
-    let _ = w.set_focus();
-    // The plugin writes to disk only on app exit; save on close so a killed app keeps it.
+    let fallback = w.clone();
+    std::thread::spawn(move || {
+        // In case the page never calls show() (e.g. a JS error), don't leave it invisible.
+        std::thread::sleep(Duration::from_secs(3));
+        if fallback.is_visible().is_ok_and(|v| !v) {
+            let _ = fallback.show();
+        }
+    });
     let handle = app.clone();
+    let win = w.clone();
     w.on_window_event(move |e| {
-        if let WindowEvent::CloseRequested { .. } = e {
+        if let WindowEvent::CloseRequested { api, .. } = e {
+            // Hide instead of destroying it, so reopening skips the WebKit startup.
+            api.prevent_close();
+            let _ = win.hide();
+            // The plugin writes to disk only on app exit; save now so a killed app keeps it.
             let _ = handle.save_window_state(WINDOW_STATE);
         }
     });

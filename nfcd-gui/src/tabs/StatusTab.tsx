@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import { api, type Status } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
@@ -12,6 +13,12 @@ export function StatusTab() {
     api.status().then(setStatus, (e) => setError(String(e)));
   };
   useEffect(load, []);
+  useEffect(() => {
+    const unlisten = listen("settings-shown", load);
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
 
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   if (!status) return <p className="text-sm text-muted-foreground">{t("st.checking")}</p>;

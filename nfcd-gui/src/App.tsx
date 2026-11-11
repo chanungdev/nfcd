@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PatternsEditor } from "@/components/PatternsEditor";
@@ -37,6 +39,12 @@ export default function App() {
     );
   };
   useEffect(load, []);
+  // The window is created hidden; show it once React has rendered. Not rAF: WebKit
+  // may not fire animation frames for a window that has never been visible.
+  useEffect(() => {
+    const w = getCurrentWindow();
+    w.show().then(() => w.setFocus());
+  }, []);
 
   const edit = (d: Draft) => {
     setDraft(d);
@@ -55,6 +63,18 @@ export default function App() {
   };
 
   const dirty = draft !== null && JSON.stringify(draft) !== saved;
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  // The window is hidden, not closed, so pick up edits made elsewhere when it's reopened.
+  // Unsaved changes win: they stay until the user saves or reverts.
+  useEffect(() => {
+    const unlisten = listen("settings-shown", () => {
+      if (!dirtyRef.current) load();
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
 
   return (
     <main className="flex h-screen flex-col gap-3 p-4">
