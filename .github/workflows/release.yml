@@ -34,3 +34,38 @@ jobs:
             $FLAGS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  gui:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: nfcd-gui/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: nfcd-gui/pnpm-lock.yaml
+
+      - name: Add Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build nfcd.app (universal)
+        working-directory: nfcd-gui
+        run: |
+          pnpm install --frozen-lockfile
+          # The app version comes from the tag, so nothing to bump by hand.
+          pnpm tauri build --target universal-apple-darwin --bundles app \
+            --config "{\"version\":\"${GITHUB_REF_NAME#v}\"}"
+
+      - name: Upload to the release
+        run: |
+          cd nfcd-gui/src-tauri/target/universal-apple-darwin/release/bundle/macos
+          ditto -c -k --keepParent nfcd.app nfcd-app.zip
+          gh release upload "$GITHUB_REF_NAME" nfcd-app.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

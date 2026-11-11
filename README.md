@@ -35,6 +35,7 @@ nfcd runs in the background and fixes names as they appear.
   - If macOS drops file system events, the watched directories are rescanned.
 - **gitignore-style ignore rules** — Global, per-path, and per-directory `.nfcignore` patterns, with `!` negation. `nfcd check-ignore` shows which rule decides a path.
 - **Live config** — Edits to `config.toml` take effect without restarting the watcher.
+- **Menu bar app** — Watcher status and start/stop in the menu bar, and a settings window for watched folders and ignore patterns (English/Korean).
 - **TUI and CLI** — A keyboard- and mouse-driven TUI, plus a scriptable CLI with `--json` and `--dry-run`.
 
 ## Installation
@@ -42,8 +43,20 @@ nfcd runs in the background and fixes names as they appear.
 ### Homebrew
 
 ```bash
-brew install chanungdev/tap/nfcd
+brew install chanungdev/tap/nfcd               # CLI, TUI, and watcher
+brew install --cask chanungdev/tap/nfcd-app    # menu bar app (also installs the above)
 ```
+
+### Menu bar app
+
+The app shows the watcher status in the menu bar. From its menu you can start or stop the watcher and open **Settings…**, which edits watched folders and ignore patterns, checks a path against the ignore rules, and shows the Full Disk Access status. It opens at login; turn that off in the Status tab.
+
+The app isn't signed with an Apple Developer ID yet, so macOS blocks it the first time:
+
+1. Open `nfcd.app` from Applications and close the warning.
+2. Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the nfcd message.
+
+The app controls the watcher through the `nfcd` CLI. Full Disk Access is needed for `nfcd-watcher` only, not for the app.
 
 ### From source
 
@@ -256,6 +269,7 @@ nfcd fixes names on your Mac. Other software, such as browsers, mail services, c
 ```bash
 nfcd watcher stop
 rm ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
+brew uninstall --zap --cask nfcd-app     # if you installed the menu bar app
 brew uninstall nfcd                      # or: cargo uninstall nfcd nfcd-watcher
 rm -r ~/.config/nfcd                     # optional: remove your config
 ```

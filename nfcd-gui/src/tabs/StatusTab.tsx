@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { api, type Status } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
@@ -61,9 +63,28 @@ export function StatusTab() {
           </Button>
         </div>
       )}
+      <AutostartSwitch />
       <Button variant="outline" className="self-start" onClick={load}>
         {t("st.refresh")}
       </Button>
     </div>
+  );
+}
+
+function AutostartSwitch() {
+  const { t } = useI18n();
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    isEnabled().then(setOn, () => setOn(null));
+  }, []);
+  if (on === null) return null;
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <Switch
+        checked={on}
+        onCheckedChange={(v) => (v ? enable() : disable()).then(() => setOn(v))}
+      />
+      {t("st.autostart")}
+    </label>
   );
 }

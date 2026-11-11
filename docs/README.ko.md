@@ -35,6 +35,7 @@ nfcd는 백그라운드에서 돌면서 파일 이름이 생기는 대로 고칩
   - macOS가 파일 시스템 이벤트를 놓쳤다고 알려 오면 감시 폴더를 다시 스캔합니다.
 - **gitignore 형식의 ignore 규칙:** global 패턴, 경로별 패턴, 폴더별 `.nfcignore` 파일을 쓸 수 있고 `!`로 예외를 둘 수 있습니다. 어떤 규칙 때문에 제외됐는지는 `nfcd check-ignore`로 확인합니다.
 - **설정 즉시 반영:** `config.toml`을 고치면 감시 데몬을 재시작하지 않아도 바로 적용됩니다.
+- **메뉴 막대 앱:** 메뉴 막대에서 watcher 상태를 보고 시작하거나 중지할 수 있습니다. 설정 창에서 감시 폴더와 ignore 패턴을 편집합니다(한국어/영어).
 - **TUI와 CLI:** 키보드와 마우스로 쓰는 TUI가 있고, 스크립트에서 쓰기 좋은 CLI는 `--json`과 `--dry-run`을 지원합니다.
 
 ## 설치
@@ -42,8 +43,20 @@ nfcd는 백그라운드에서 돌면서 파일 이름이 생기는 대로 고칩
 ### Homebrew
 
 ```bash
-brew install chanungdev/tap/nfcd
+brew install chanungdev/tap/nfcd               # CLI, TUI, watcher
+brew install --cask chanungdev/tap/nfcd-app    # 메뉴 막대 앱 (위 항목도 함께 설치)
 ```
+
+### 메뉴 막대 앱
+
+메뉴 막대에 watcher 상태가 표시됩니다. 메뉴에서 watcher를 시작하거나 중지할 수 있고, **Settings…**를 열면 감시 폴더와 ignore 패턴을 편집하고, 경로가 ignore되는지 확인하고, 전체 디스크 접근 권한 상태를 볼 수 있습니다. 로그인할 때 자동으로 실행되며, 상태 탭에서 끌 수 있습니다.
+
+앱이 아직 Apple Developer ID로 서명되지 않아서 처음 실행할 때 macOS가 막습니다.
+
+1. 응용 프로그램 폴더에서 `nfcd.app`을 열고 경고 창을 닫습니다.
+2. **시스템 설정 → 개인정보 보호 및 보안**을 열고 아래로 내려서, nfcd 관련 메시지 옆의 **그래도 열기**를 누릅니다.
+
+앱은 `nfcd` CLI를 통해 watcher를 제어합니다. 전체 디스크 접근 권한은 앱이 아니라 `nfcd-watcher`에만 필요합니다.
 
 ### 소스로 빌드
 
@@ -256,6 +269,7 @@ nfcd는 내 Mac에 있는 파일 이름을 고칩니다. 하지만 브라우저,
 ```bash
 nfcd watcher stop
 rm ~/Library/LaunchAgents/io.github.chanungdev.nfcd.plist
+brew uninstall --zap --cask nfcd-app     # 메뉴 막대 앱을 설치했다면
 brew uninstall nfcd                      # 또는: cargo uninstall nfcd nfcd-watcher
 rm -r ~/.config/nfcd                     # 선택: 설정까지 지울 때
 ```

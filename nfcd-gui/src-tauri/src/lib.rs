@@ -8,6 +8,7 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 const ICON_RUNNING: &[u8] = include_bytes!("../icons/tray/running.png");
@@ -130,9 +131,31 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     }
 }
 
+/// Start at login by default: enable it on the first launch only, so turning it
+/// off in Settings sticks. Debug builds skip this to keep dev binaries out of
+/// ~/Library/LaunchAgents.
+fn enable_autostart_once(app: &tauri::App) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let marker = dir.join("autostart-initialized");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(marker, "");
+    }
+}
+
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+    enable_autostart_once(app);
 
     let status = MenuItem::with_id(app, "status", "Watcher: …", false, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "Start watcher", true, None::<&str>)?;
@@ -178,6 +201,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            // Named after the bundle id; the default ("nfcd") would make a vague
+            // ~/Library/LaunchAgents/nfcd.plist next to the watcher's plist.
+            tauri_plugin_autostart::Builder::new()
+                .app_name("io.github.chanungdev.nfcd.gui")
+                .macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent)
+                .build(),
+        )
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(WINDOW_STATE)
