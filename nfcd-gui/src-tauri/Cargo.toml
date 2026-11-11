@@ -1,0 +1,25 @@
+[package]
+name = "nfcd-gui"
+version = "0.1.1-dev"
+description = "Menu bar app for nfcd"
+edition = "2024"
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name.
+name = "nfcd_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+nfcd-core = { path = "../../nfcd-core" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

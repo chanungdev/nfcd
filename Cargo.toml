@@ -1,6 +1,7 @@
 [workspace]
 members = ["nfcd", "nfcd-core", "nfcd-watcher"]
 resolver = "3"
+exclude = ["nfcd-gui/src-tauri"]
 
 [workspace.package]
 version = "0.1.1-dev"
