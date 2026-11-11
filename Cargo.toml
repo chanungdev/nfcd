@@ -4,7 +4,7 @@ resolver = "3"
 exclude = ["nfcd-gui/src-tauri"]
 
 [workspace.package]
-version = "0.2.3-dev"
+version = "0.2.3"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
