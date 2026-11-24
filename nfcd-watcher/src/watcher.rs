@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::spawn;
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
 
 /// Maximum number of concurrent file event handler tasks.
 const MAX_CONCURRENT_TASKS: usize = 200;
@@ -59,11 +60,37 @@ fn route(event: &Event, path: &Path, entries: &[ActiveEntry]) -> Option<bool> {
     Some(scan)
 }
 
-/// Scan registered roots in the background (startup and dropped-event recovery).
-fn spawn_scans(roots: &[(PathBuf, bool)], scope: &Arc<IgnoreScope>) {
-    for (root, recursive) in roots {
-        spawn(handler::scan_dir(root.clone(), *recursive, scope.clone()));
+/// Scan directories in the background (startup and dropped-event recovery).
+fn spawn_scans(dirs: &[(PathBuf, bool)], scope: &Arc<IgnoreScope>) -> Vec<JoinHandle<()>> {
+    dirs.iter()
+        .map(|(dir, recursive)| spawn(handler::scan_dir(dir.clone(), *recursive, scope.clone())))
+        .collect()
+}
+
+/// What to scan after FSEvents dropped events under `path`.
+#[derive(Debug, PartialEq)]
+enum Rescan {
+    /// Not tied to one watched folder (e.g. a kernel-wide drop): scan every root.
+    All,
+    /// Scan this directory (recursively or not).
+    Dir(PathBuf, bool),
+    /// Ignored or gone: nothing to do.
+    Skip,
+}
+
+fn rescan_target(path: Option<&PathBuf>, entries: &[ActiveEntry]) -> Rescan {
+    let Some((path, entry)) = path.and_then(|p| Some((p, effective_entry(p, entries)?))) else {
+        return Rescan::All;
+    };
+    // A children entry only converts the root's direct children, so rescan the root.
+    let (dir, recursive) = match entry.mode {
+        PathMode::Recursive => (path.clone(), true),
+        PathMode::Children => (entry.canonical.clone(), false),
+    };
+    if !dir.is_dir() || entry.is_ignored(&dir, true) {
+        return Rescan::Skip;
     }
+    Rescan::Dir(dir, recursive)
 }
 
 /// Register watch paths with the notify watcher. Returns (recursive_count, children_count,
@@ -271,7 +298,12 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
     // Process events with debouncing to deduplicate rapid events on the same path.
     // Path -> whether to scan its subtree.
     let mut pending: HashMap<PathBuf, bool> = HashMap::new();
-    let mut rescan = false;
+    // Dropped-event recovery. One batch of scans runs at a time: drops keep arriving
+    // while a big tree (e.g. a build in ~/repos) is busy, and overlapping full-tree
+    // scans piled up past 200% CPU. Requests made meanwhile wait and merge.
+    let mut rescan_all = false;
+    let mut rescan_dirs: HashMap<PathBuf, bool> = HashMap::new();
+    let mut scans: Vec<JoinHandle<()>> = Vec::new();
     let mut debounce_timer = tokio::time::interval(DEBOUNCE_DURATION);
 
     loop {
@@ -279,9 +311,15 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
             Some(res) = rx.recv() => {
                 match res {
                     // FSEvents dropped events (MustScanSubDirs / KernelDropped / UserDropped).
-                    // ponytail: rescans every root, not just the reported path. Drops are rare;
-                    // narrow it if large trees make this costly.
-                    Ok(event) if event.need_rescan() => rescan = true,
+                    Ok(event) if event.need_rescan() => {
+                        match rescan_target(event.paths.first(), &active.entries) {
+                            Rescan::All => rescan_all = true,
+                            Rescan::Dir(dir, recursive) => {
+                                *rescan_dirs.entry(dir).or_default() |= recursive;
+                            }
+                            Rescan::Skip => {}
+                        }
+                    }
                     Ok(event) => {
                         let Some(path) = event.paths.first() else {
                             continue;
@@ -314,15 +352,40 @@ pub async fn start_watcher(rt_handle: tokio::runtime::Handle, config: Config) {
                     // Config edits are rare; diff old/new entries if this gets costly.
                     active = activate(&mut watcher, &config, "reloaded config");
                     pending.clear();
-                } else if std::mem::take(&mut rescan) {
-                    warn!("File system events were dropped. Rescanning watch paths.");
-                    spawn_scans(&active.roots, &active.scope);
+                    rescan_all = false;
+                    rescan_dirs.clear();
+                } else if (rescan_all || !rescan_dirs.is_empty())
+                    && scans.iter().all(JoinHandle::is_finished)
+                {
+                    scans = if std::mem::take(&mut rescan_all) {
+                        rescan_dirs.clear();
+                        warn!("File system events were dropped. Rescanning watch paths.");
+                        spawn_scans(&active.roots, &active.scope)
+                    } else {
+                        // Skip folders already inside another recursive one in the batch.
+                        // ponytail: O(n²) over the batch; batches are a handful of folders.
+                        let dirs: Vec<_> = rescan_dirs
+                            .iter()
+                            .filter(|(d, _)| {
+                                !rescan_dirs
+                                    .iter()
+                                    .any(|(p, &r)| r && p != *d && d.starts_with(p))
+                            })
+                            .map(|(d, &r)| (d.clone(), r))
+                            .collect();
+                        rescan_dirs.clear();
+                        warn!(
+                            "File system events were dropped. Rescanning {} folder(s).",
+                            dirs.len()
+                        );
+                        spawn_scans(&dirs, &active.scope)
+                    };
                 } else if std::mem::take(&mut nfcignore_changed) {
                     // Removed patterns un-ignore files that were never converted.
                     // ponytail: rescans every root, not just the file's directory.
                     // .nfcignore edits are rare; scan only that subtree if this gets costly.
                     info!("{} changed. Rescanning watch paths.", NFCIGNORE);
-                    spawn_scans(&active.roots, &active.scope);
+                    scans.extend(spawn_scans(&active.roots, &active.scope));
                 }
                 // ponytail: renaming a folder emits another event for its new name, so its
                 // subtree is scanned twice (the second pass only reads). Track recent scans
@@ -386,5 +449,34 @@ mod tests {
         // Children mode never scans subtrees.
         let children = entries(&root, PathMode::Children, &[]);
         assert_eq!(route(&rename(&dir), &dir, &children), None);
+    }
+
+    #[test]
+    fn rescan_targets_only_the_reported_folder() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let dir = root.join("src");
+        let build = root.join("app/target/debug");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir_all(&build).unwrap();
+        let rec = entries(&root, PathMode::Recursive, &["target/"]);
+
+        assert_eq!(
+            rescan_target(Some(&dir), &rec),
+            Rescan::Dir(dir.clone(), true)
+        );
+        // Inside an ignored folder (a build writing heavily): nothing to scan.
+        assert_eq!(rescan_target(Some(&build), &rec), Rescan::Skip);
+        // Gone, or outside every watched folder.
+        assert_eq!(rescan_target(Some(&root.join("gone")), &rec), Rescan::Skip);
+        assert_eq!(rescan_target(Some(&PathBuf::from("/")), &rec), Rescan::All);
+        assert_eq!(rescan_target(None, &rec), Rescan::All);
+
+        // Children entry: rescan the root itself, not recursively.
+        let children = entries(&root, PathMode::Children, &[]);
+        assert_eq!(
+            rescan_target(Some(&dir), &children),
+            Rescan::Dir(root.clone(), false)
+        );
     }
 }
